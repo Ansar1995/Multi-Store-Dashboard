@@ -15,23 +15,23 @@ const supabase = createClient(supabaseUrl, supabaseAnonKey);
 const DEFAULT_START_DATE_KEY = 'msd_default_start_date';
 const FALLBACK_START_DATE = '2026-01-01';
 
-type Tab = 'overview' | 'wages' | 'budget';
+type Tab = 'overview' | 'wages' | 'budget' | 'suppliers';
 
 function pad2(n: number) {
   return n < 10 ? `0${n}` : `${n}`;
 }
 
-// Every quarter start must be Jan/Apr/Jul/Oct 1st - this generates the
+// Every quarter start must be Feb/May/Aug/Nov 1st - this generates the
 // selectable list (2 years back through 1 year ahead of today).
 function buildQuarterOptions() {
   const now = new Date();
   const thisYear = now.getFullYear();
   const opts: { value: string; label: string }[] = [];
   const quarters = [
-    { month: 1, label: 'Q1', range: 'Jan-Mar' },
-    { month: 4, label: 'Q2', range: 'Apr-Jun' },
-    { month: 7, label: 'Q3', range: 'Jul-Sep' },
-    { month: 10, label: 'Q4', range: 'Oct-Dec' },
+    { month: 2, label: 'Q1', range: 'Feb-Apr' },
+    { month: 5, label: 'Q2', range: 'May-Jul' },
+    { month: 8, label: 'Q3', range: 'Aug-Oct' },
+    { month: 11, label: 'Q4', range: 'Nov-Jan' },
   ];
   for (let y = thisYear - 2; y <= thisYear + 1; y++) {
     for (const q of quarters) {
@@ -42,6 +42,22 @@ function buildQuarterOptions() {
     }
   }
   return opts;
+}
+
+// Which Feb/May/Aug/Nov quarter today falls into, as a starting default.
+function getCurrentQuarterStart() {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = now.getMonth() + 1; // 1-12
+  const starts = [2, 5, 8, 11];
+  let chosenMonth = 11;
+  let chosenYear = y - 1;
+  for (const sm of starts) {
+    if (m >= sm) { chosenMonth = sm; chosenYear = y; }
+  }
+  // If we're in Jan, the current quarter started Nov of last year.
+  if (m === 1) { chosenMonth = 11; chosenYear = y - 1; }
+  return `${chosenYear}-${pad2(chosenMonth)}-01`;
 }
 
 export default function MobileFriendlyDashboard() {
@@ -78,7 +94,7 @@ export default function MobileFriendlyDashboard() {
 
   // --- Hours budget (quarterly, read + write) ------------------------------
   const quarterOptions = useMemo(() => buildQuarterOptions(), []);
-  const [budgetQuarter, setBudgetQuarter] = useState<string>(quarterOptions[2]?.value ?? '2026-07-01');
+  const [budgetQuarter, setBudgetQuarter] = useState<string>(() => getCurrentQuarterStart());
   const [budgetStatus, setBudgetStatus] = useState<any[]>([]);
   const [budgetLoading, setBudgetLoading] = useState(false);
   const [budgetError, setBudgetError] = useState<string | null>(null);
@@ -86,6 +102,32 @@ export default function MobileFriendlyDashboard() {
   const [budgetFormHours, setBudgetFormHours] = useState<string>('');
   const [budgetSaving, setBudgetSaving] = useState(false);
   const [budgetSaveMsg, setBudgetSaveMsg] = useState<string | null>(null);
+
+  // --- Supplier report (filter by invoice date / date range + supplier) ---
+  const [suppliers, setSuppliers] = useState<string[]>([]);
+  const [supplierFilter, setSupplierFilter] = useState<string>('all');
+  const [supplierData, setSupplierData] = useState<any[]>([]);
+  const [supplierLoading, setSupplierLoading] = useState(false);
+  const [supplierError, setSupplierError] = useState<string | null>(null);
+
+  async function loadSuppliers() {
+    const { data } = await supabase.rpc('get_suppliers');
+    if (data) setSuppliers(data.map((r: any) => r.supplier));
+  }
+
+  async function fetchSupplierReport() {
+    setSupplierLoading(true);
+    setSupplierError(null);
+    const { data, error } = await supabase.rpc('get_supplier_report', {
+      start_date: startDate,
+      end_date: endDate,
+      supplier_param: supplierFilter === 'all' ? null : supplierFilter,
+      branch_id_param: branchId === 'all' ? null : parseInt(branchId)
+    });
+    if (error) setSupplierError(error.message);
+    else if (data) setSupplierData(data);
+    setSupplierLoading(false);
+  }
 
   async function loadBranches() {
     // The actual Supabase table is "Stores" (Store_code / Store_Name), not
@@ -167,7 +209,7 @@ export default function MobileFriendlyDashboard() {
     setBudgetSaving(false);
   }
 
-  useEffect(() => { loadBranches(); }, []);
+  useEffect(() => { loadBranches(); loadSuppliers(); }, []);
 
   // On first load, apply the saved default Start Date (if one was set in
   // an earlier visit) instead of the hardcoded fallback.
@@ -193,6 +235,10 @@ export default function MobileFriendlyDashboard() {
   useEffect(() => {
     if (tab === 'budget') fetchBudgetStatus();
   }, [tab, budgetQuarter, branchId]);
+
+  useEffect(() => {
+    if (tab === 'suppliers') fetchSupplierReport();
+  }, [tab, startDate, endDate, branchId, supplierFilter]);
 
   function saveDefaultStartDate() {
     localStorage.setItem(DEFAULT_START_DATE_KEY, defaultStartDateDraft);
@@ -269,6 +315,39 @@ export default function MobileFriendlyDashboard() {
     document.body.removeChild(link);
   };
 
+  const supplierTotals = useMemo(() => {
+    return supplierData.reduce(
+      (acc, r) => ({ total: acc.total + Number(r.total || 0), vat: acc.vat + Number(r.vat || 0) }),
+      { total: 0, vat: 0 }
+    );
+  }, [supplierData]);
+
+  const downloadSupplierCSV = () => {
+    if (supplierData.length === 0) return;
+    const headers = ['Invoice Date', 'Supplier', 'Store', 'Invoice/Details', 'Account', 'Dept', 'Total', 'VAT'];
+    const csvRows = [headers.join(',')];
+    for (const row of supplierData) {
+      csvRows.push([
+        row.invoice_date,
+        `"${String(row.supplier).replace(/"/g, '""')}"`,
+        `"${String(row.store_name).replace(/"/g, '""')}"`,
+        `"${String(row.details || '').replace(/"/g, '""')}"`,
+        `"${String(row.account || '').replace(/"/g, '""')}"`,
+        `"${String(row.dept || '').replace(/"/g, '""')}"`,
+        row.total, row.vat,
+      ].join(','));
+    }
+    const blob = new Blob([csvRows.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', `supplier_report_${supplierFilter === 'all' ? 'all-suppliers' : supplierFilter.replace(/\s+/g, '_')}_${startDate}_to_${endDate}.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   return (
     <div className="p-4 sm:p-6 max-w-6xl mx-auto bg-gray-50 min-h-screen text-gray-800">
 
@@ -294,6 +373,7 @@ export default function MobileFriendlyDashboard() {
           ['overview', '📈 Overview'],
           ['wages', '🧾 Wages & Hours'],
           ['budget', '🎯 Hours Budget'],
+          ['suppliers', '🚚 Suppliers'],
         ] as [Tab, string][]).map(([key, label]) => (
           <button
             key={key}
@@ -371,6 +451,23 @@ export default function MobileFriendlyDashboard() {
           </div>
         )}
       </div>
+
+      {tab === 'suppliers' && (
+        <div className="mb-4 bg-white p-4 rounded-xl border border-gray-200 shadow-sm grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div className="sm:col-span-2">
+            <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500 mb-1">Supplier</label>
+            <select value={supplierFilter} onChange={(e) => setSupplierFilter(e.target.value)} className="w-full rounded-lg border-gray-300 p-2 text-sm border focus:ring-2 focus:ring-blue-500 focus:outline-none">
+              <option value="all">All Suppliers</option>
+              {suppliers.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+          <div className="flex items-end">
+            <p className="text-xs text-gray-400">
+              Dates above filter by invoice date (the date on each Costs line). Pick a single day by setting Start and End the same, or a range.
+            </p>
+          </div>
+        </div>
+      )}
 
       {tab === 'overview' && (
         <>
@@ -751,6 +848,110 @@ export default function MobileFriendlyDashboard() {
                     </div>
                   );
                 })}
+              </div>
+            </>
+          )}
+        </>
+      )}
+
+      {tab === 'suppliers' && (
+        <>
+          <div className="flex justify-between items-center mb-4">
+            <div className="text-sm text-gray-500">
+              {supplierData.length} line{supplierData.length === 1 ? '' : 's'} · Total {formatGBP(supplierTotals.total)}{supplierTotals.vat > 0 ? ` (incl. ${formatGBP(supplierTotals.vat)} VAT)` : ''}
+            </div>
+            <button
+              onClick={downloadSupplierCSV}
+              disabled={supplierData.length === 0}
+              className="inline-flex items-center justify-center bg-blue-600 hover:bg-blue-700 text-white font-medium text-sm py-2.5 px-4 rounded-lg shadow-sm transition disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              📥 Download CSV
+            </button>
+          </div>
+
+          {supplierError && (
+            <div className="mb-4 p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm">
+              Couldn&apos;t load supplier report: {supplierError}
+            </div>
+          )}
+
+          {supplierLoading ? (
+            <div className="p-12 text-center text-sm font-medium text-gray-400 bg-white rounded-xl border border-gray-200">Retrieving supplier invoices...</div>
+          ) : (
+            <>
+              {/* DESKTOP: supplier report table */}
+              <div className="hidden md:block bg-white rounded-xl border border-gray-200 shadow-sm overflow-x-auto">
+                <table className="min-w-full divide-y divide-gray-200 text-sm">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-4 py-3.5 text-left font-semibold text-gray-600">Invoice Date</th>
+                      <th className="px-4 py-3.5 text-left font-semibold text-gray-600">Supplier</th>
+                      <th className="px-4 py-3.5 text-left font-semibold text-gray-600">Store</th>
+                      <th className="px-4 py-3.5 text-left font-semibold text-gray-600">Invoice / Details</th>
+                      <th className="px-4 py-3.5 text-left font-semibold text-gray-600">Account</th>
+                      <th className="px-4 py-3.5 text-left font-semibold text-gray-600">Dept</th>
+                      <th className="px-4 py-3.5 text-right font-semibold text-gray-600">Total</th>
+                      <th className="px-4 py-3.5 text-right font-semibold text-gray-600">VAT</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200 bg-white">
+                    {supplierData.length === 0 && (
+                      <tr><td className="px-4 py-8 text-center text-gray-400" colSpan={8}>No invoices in this date range.</td></tr>
+                    )}
+                    {supplierData.map((row, idx) => (
+                      <tr key={idx} className="hover:bg-gray-50 transition">
+                        <td className="px-4 py-3 text-gray-700 whitespace-nowrap">{row.invoice_date}</td>
+                        <td className="px-4 py-3 font-medium text-gray-900 whitespace-nowrap">{row.supplier}</td>
+                        <td className="px-4 py-3 text-gray-700 whitespace-nowrap">{row.store_name}</td>
+                        <td className="px-4 py-3 text-gray-500">{row.details}</td>
+                        <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{row.account}</td>
+                        <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{row.dept}</td>
+                        <td className="px-4 py-3 text-right font-semibold text-gray-900">{formatGBP(row.total)}</td>
+                        <td className="px-4 py-3 text-right text-gray-500">{Number(row.vat) > 0 ? formatGBP(row.vat) : '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  {supplierData.length > 0 && (
+                    <tfoot className="bg-gray-50 border-t-2 border-gray-200">
+                      <tr>
+                        <td className="px-4 py-3 font-bold text-gray-700" colSpan={6}>Total</td>
+                        <td className="px-4 py-3 text-right font-bold text-gray-900">{formatGBP(supplierTotals.total)}</td>
+                        <td className="px-4 py-3 text-right font-bold text-gray-900">{supplierTotals.vat > 0 ? formatGBP(supplierTotals.vat) : '—'}</td>
+                      </tr>
+                    </tfoot>
+                  )}
+                </table>
+              </div>
+
+              {/* MOBILE: supplier report cards */}
+              <div className="block md:hidden space-y-4">
+                {supplierData.length === 0 && (
+                  <div className="p-8 text-center text-gray-400 bg-white rounded-xl border border-gray-200">No invoices in this date range.</div>
+                )}
+                {supplierData.map((row, idx) => (
+                  <div key={idx} className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm space-y-3">
+                    <div className="border-b border-gray-100 pb-2 flex justify-between items-start">
+                      <div>
+                        <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">{row.invoice_date}</span>
+                        <div className="text-base font-bold text-gray-900">{row.supplier}</div>
+                      </div>
+                      <div className="text-base font-bold text-gray-900">{formatGBP(row.total)}</div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3 text-sm">
+                      <div><div className="text-xs text-gray-400 font-medium">Store</div><div className="font-medium">{row.store_name}</div></div>
+                      <div><div className="text-xs text-gray-400 font-medium">VAT</div><div className="font-medium">{Number(row.vat) > 0 ? formatGBP(row.vat) : '—'}</div></div>
+                      <div className="col-span-2"><div className="text-xs text-gray-400 font-medium">Invoice / Details</div><div className="font-medium">{row.details}</div></div>
+                      <div><div className="text-xs text-gray-400 font-medium">Account</div><div className="font-medium">{row.account}</div></div>
+                      <div><div className="text-xs text-gray-400 font-medium">Dept</div><div className="font-medium">{row.dept}</div></div>
+                    </div>
+                  </div>
+                ))}
+                {supplierData.length > 0 && (
+                  <div className="bg-gray-900 text-white p-4 rounded-xl flex justify-between items-center font-bold">
+                    <span>Total ({supplierData.length} lines)</span>
+                    <span>{formatGBP(supplierTotals.total)}</span>
+                  </div>
+                )}
               </div>
             </>
           )}
