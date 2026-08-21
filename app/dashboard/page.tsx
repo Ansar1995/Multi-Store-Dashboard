@@ -15,7 +15,145 @@ const supabase = createClient(supabaseUrl, supabaseAnonKey);
 const DEFAULT_START_DATE_KEY = 'msd_default_start_date';
 const FALLBACK_START_DATE = '2026-01-01';
 
-type Tab = 'overview' | 'wages' | 'budget' | 'suppliers';
+type Tab = 'overview' | 'wages' | 'budget' | 'suppliers' | 'tree';
+
+type CostTreeNode = {
+  total: number;
+  children?: Record<string, CostTreeNode>;
+  items?: any[];
+};
+
+function buildCostTree(rows: any[]): Record<string, CostTreeNode> {
+  const root: Record<string, CostTreeNode> = {};
+  for (const r of rows) {
+    const acct = r.account || 'Uncategorized';
+    const dept = r.dept || 'Uncategorized';
+    const store = r.store_name || 'Unknown Store';
+    const supplier = r.supplier || 'Unknown Supplier';
+    const total = Number(r.total || 0);
+
+    root[acct] = root[acct] || { total: 0, children: {} };
+    root[acct].total += total;
+    const depts = root[acct].children!;
+
+    depts[dept] = depts[dept] || { total: 0, children: {} };
+    depts[dept].total += total;
+    const stores = depts[dept].children!;
+
+    stores[store] = stores[store] || { total: 0, children: {} };
+    stores[store].total += total;
+    const suppliers = stores[store].children!;
+
+    suppliers[supplier] = suppliers[supplier] || { total: 0, items: [] };
+    suppliers[supplier].total += total;
+    suppliers[supplier].items!.push(r);
+  }
+  return root;
+}
+
+function sortedEntries(children: Record<string, CostTreeNode>) {
+  return Object.entries(children).sort((a, b) => b[1].total - a[1].total);
+}
+
+function Spinner() {
+  return (
+    <svg className="animate-spin h-5 w-5 text-blue-500" viewBox="0 0 24 24" fill="none">
+      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+    </svg>
+  );
+}
+
+function LoadingBlock({ label }: { label: string }) {
+  return (
+    <div className="p-12 flex flex-col items-center justify-center gap-3 text-sm font-medium text-gray-400 bg-white rounded-xl border border-gray-200">
+      <Spinner />
+      <span>{label}</span>
+    </div>
+  );
+}
+
+const LEVEL_STYLES = [
+  { icon: '🏢', label: 'Account' },
+  { icon: '📁', label: 'Department' },
+  { icon: '🏬', label: 'Store' },
+  { icon: '🚚', label: 'Supplier' },
+];
+
+function CostTreeRow({
+  name, node, path, level, expanded, onToggle, formatGBP, parentTotal,
+}: {
+  name: string;
+  node: CostTreeNode;
+  path: string;
+  level: number;
+  expanded: Set<string>;
+  onToggle: (key: string) => void;
+  formatGBP: (n: number) => string;
+  parentTotal: number;
+}) {
+  const isOpen = expanded.has(path);
+  const isLeafContainer = !!node.items;
+  const hasChildren = !!node.children && Object.keys(node.children).length > 0;
+  const canExpand = hasChildren || isLeafContainer;
+  const pct = parentTotal > 0 ? Math.round((node.total / parentTotal) * 100) : 0;
+  const style = LEVEL_STYLES[Math.min(level, LEVEL_STYLES.length - 1)];
+
+  return (
+    <div className="border-b border-gray-100 last:border-b-0">
+      <button
+        onClick={() => canExpand && onToggle(path)}
+        disabled={!canExpand}
+        className={`w-full flex items-center gap-2 py-2.5 pr-3 text-left hover:bg-gray-50 transition ${canExpand ? 'cursor-pointer' : 'cursor-default'}`}
+        style={{ paddingLeft: `${12 + level * 22}px` }}
+      >
+        <span className={`w-4 text-xs text-gray-400 transition-transform ${isOpen ? 'rotate-90' : ''}`}>
+          {canExpand ? '▶' : ''}
+        </span>
+        <span className="text-sm">{style.icon}</span>
+        <span className={`text-sm flex-1 truncate ${level === 0 ? 'font-bold text-gray-900' : level === 1 ? 'font-semibold text-gray-800' : 'text-gray-700'}`}>
+          {name}
+        </span>
+        <span className="hidden sm:block w-24 h-1.5 rounded-full bg-gray-100 overflow-hidden">
+          <span className="block h-full bg-blue-400" style={{ width: `${pct}%` }} />
+        </span>
+        <span className={`text-sm tabular-nums ${level === 0 ? 'font-bold text-gray-900' : 'font-medium text-gray-700'}`}>
+          {formatGBP(node.total)}
+        </span>
+      </button>
+
+      {isOpen && hasChildren && (
+        <div>
+          {sortedEntries(node.children!).map(([childName, childNode]) => (
+            <CostTreeRow
+              key={path + '::' + childName}
+              name={childName}
+              node={childNode}
+              path={path + '::' + childName}
+              level={level + 1}
+              expanded={expanded}
+              onToggle={onToggle}
+              formatGBP={formatGBP}
+              parentTotal={node.total}
+            />
+          ))}
+        </div>
+      )}
+
+      {isOpen && isLeafContainer && (
+        <div className="bg-gray-50/60" style={{ paddingLeft: `${12 + (level + 1) * 22}px` }}>
+          {node.items!.map((it, idx) => (
+            <div key={idx} className="flex items-center gap-3 py-2 pr-3 text-xs text-gray-600 border-t border-dashed border-gray-200 first:border-t-0">
+              <span className="w-20 shrink-0 text-gray-400">{it.invoice_date}</span>
+              <span className="flex-1 truncate">{it.details || '—'}</span>
+              <span className="font-medium tabular-nums text-gray-800">{formatGBP(Number(it.total || 0))}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function pad2(n: number) {
   return n < 10 ? `0${n}` : `${n}`;
@@ -110,6 +248,20 @@ export default function MobileFriendlyDashboard() {
   const [supplierLoading, setSupplierLoading] = useState(false);
   const [supplierError, setSupplierError] = useState<string | null>(null);
 
+  // --- Cost tree (Account -> Dept -> Store -> Supplier -> line items) -----
+  const [treeData, setTreeData] = useState<any[]>([]);
+  const [treeLoading, setTreeLoading] = useState(false);
+  const [treeError, setTreeError] = useState<string | null>(null);
+  const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set());
+
+  function toggleNode(key: string) {
+    setExpandedNodes(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  }
+
   async function loadSuppliers() {
     const { data } = await supabase.rpc('get_suppliers');
     if (data) setSuppliers(data.map((r: any) => r.supplier));
@@ -127,6 +279,20 @@ export default function MobileFriendlyDashboard() {
     if (error) setSupplierError(error.message);
     else if (data) setSupplierData(data);
     setSupplierLoading(false);
+  }
+
+  async function fetchCostTree() {
+    setTreeLoading(true);
+    setTreeError(null);
+    const { data, error } = await supabase.rpc('get_supplier_report', {
+      start_date: startDate,
+      end_date: endDate,
+      supplier_param: null,
+      branch_id_param: branchId === 'all' ? null : parseInt(branchId)
+    });
+    if (error) setTreeError(error.message);
+    else if (data) setTreeData(data);
+    setTreeLoading(false);
   }
 
   async function loadBranches() {
@@ -240,6 +406,10 @@ export default function MobileFriendlyDashboard() {
     if (tab === 'suppliers') fetchSupplierReport();
   }, [tab, startDate, endDate, branchId, supplierFilter]);
 
+  useEffect(() => {
+    if (tab === 'tree') fetchCostTree();
+  }, [tab, startDate, endDate, branchId]);
+
   function saveDefaultStartDate() {
     localStorage.setItem(DEFAULT_START_DATE_KEY, defaultStartDateDraft);
     setSavedDefaultStartDate(defaultStartDateDraft);
@@ -322,6 +492,39 @@ export default function MobileFriendlyDashboard() {
     );
   }, [supplierData]);
 
+  // Breakdown of the current supplier/date filter across every branch it
+  // touched -- lets you see one supplier's spend by branch at a glance,
+  // regardless of whether the top Store Filter is set to "All" or one store.
+  const supplierByBranch = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const r of supplierData) {
+      const store = r.store_name || 'Unknown Store';
+      map.set(store, (map.get(store) || 0) + Number(r.total || 0));
+    }
+    return Array.from(map.entries()).sort((a, b) => b[1] - a[1]);
+  }, [supplierData]);
+
+  const costTree = useMemo(() => buildCostTree(treeData), [treeData]);
+  const costTreeGrandTotal = useMemo(
+    () => Object.values(costTree).reduce((s, n) => s + n.total, 0),
+    [costTree]
+  );
+
+  function expandAllTree() {
+    const keys = new Set<string>();
+    for (const [acctName, acct] of sortedEntries(costTree)) {
+      const acctPath = acctName;
+      keys.add(acctPath);
+      for (const [deptName, dept] of sortedEntries(acct.children!)) {
+        keys.add(acctPath + '::' + deptName);
+      }
+    }
+    setExpandedNodes(keys);
+  }
+  function collapseAllTree() {
+    setExpandedNodes(new Set());
+  }
+
   const downloadSupplierCSV = () => {
     if (supplierData.length === 0) return;
     const headers = ['Invoice Date', 'Supplier', 'Store', 'Invoice/Details', 'Account', 'Dept', 'Total', 'VAT'];
@@ -349,43 +552,52 @@ export default function MobileFriendlyDashboard() {
   };
 
   return (
-    <div className="p-4 sm:p-6 max-w-6xl mx-auto bg-gray-50 min-h-screen text-gray-800">
+    <div className="min-h-screen bg-gradient-to-b from-slate-100 to-gray-100 text-gray-800">
+      <div className="sticky top-0 z-10 bg-gradient-to-b from-slate-100/95 to-slate-100/80 backdrop-blur-sm pt-4 sm:pt-6 pb-2">
+        <div className="px-4 sm:px-6 max-w-6xl mx-auto">
+          {/* HEADER SECTION */}
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-4">
+            <div className="flex items-center gap-3">
+              <div className="flex items-center justify-center h-11 w-11 rounded-xl bg-blue-600 text-white text-xl shadow-sm shrink-0">📊</div>
+              <div>
+                <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-gray-900">Sales Dashboard</h1>
+                <p className="text-xs sm:text-sm text-gray-500">Multi-store sales, cost and wages analytics</p>
+              </div>
+            </div>
+            <div className="flex flex-wrap w-full sm:w-auto gap-2">
+              <button
+                onClick={() => setShowSettings(!showSettings)}
+                className="inline-flex items-center justify-center bg-white hover:bg-gray-50 text-gray-700 font-medium text-sm py-2.5 px-4 rounded-lg shadow-sm border border-gray-200 transition"
+              >
+                ⚙️ Settings
+              </button>
+            </div>
+          </div>
 
-      {/* HEADER SECTION WITH DOWNLOAD ACTION */}
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-4">
-        <div>
-          <h1 className="text-xl sm:text-2xl font-bold tracking-tight">📊 Sales Dashboard</h1>
-          <p className="text-xs sm:text-sm text-gray-500">Multi-store sales analytics and reporting console</p>
-        </div>
-        <div className="flex flex-wrap w-full sm:w-auto gap-2">
-          <button
-            onClick={() => setShowSettings(!showSettings)}
-            className="inline-flex items-center justify-center bg-white hover:bg-gray-50 text-gray-700 font-medium text-sm py-2.5 px-4 rounded-lg shadow-sm border border-gray-200 transition"
-          >
-            ⚙️ Settings
-          </button>
+          {/* 🗂️ TABS */}
+          <div className="flex gap-1 bg-white p-1 rounded-xl border border-gray-200 shadow-sm w-full sm:w-fit overflow-x-auto">
+            {([
+              ['overview', '📈 Overview'],
+              ['wages', '🧾 Wages & Hours'],
+              ['budget', '🎯 Hours Budget'],
+              ['suppliers', '🚚 Suppliers'],
+              ['tree', '🌳 Cost Tree'],
+            ] as [Tab, string][]).map(([key, label]) => (
+              <button
+                key={key}
+                onClick={() => setTab(key)}
+                className={`whitespace-nowrap px-4 py-2 rounded-lg text-sm font-medium transition ${
+                  tab === key ? 'bg-blue-600 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-100'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
-      {/* 🗂️ TABS */}
-      <div className="flex gap-1 mb-4 bg-white p-1 rounded-xl border border-gray-200 shadow-sm w-full sm:w-fit overflow-x-auto">
-        {([
-          ['overview', '📈 Overview'],
-          ['wages', '🧾 Wages & Hours'],
-          ['budget', '🎯 Hours Budget'],
-          ['suppliers', '🚚 Suppliers'],
-        ] as [Tab, string][]).map(([key, label]) => (
-          <button
-            key={key}
-            onClick={() => setTab(key)}
-            className={`whitespace-nowrap px-4 py-2 rounded-lg text-sm font-medium transition ${
-              tab === key ? 'bg-blue-600 text-white' : 'text-gray-600 hover:bg-gray-100'
-            }`}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
+      <div className="p-4 sm:p-6 pt-2 max-w-6xl mx-auto">
 
       {/* ⚙️ SETTINGS PANEL: change the Start Date the dashboard opens with */}
       {showSettings && (
@@ -505,7 +717,7 @@ export default function MobileFriendlyDashboard() {
 
           {/* 📦 ADAPTIVE DATA CONTAINER */}
           {loading ? (
-            <div className="p-12 text-center text-sm font-medium text-gray-400 bg-white rounded-xl border border-gray-200">Retrieving transactional database tables...</div>
+            <LoadingBlock label="Retrieving transactional database tables..." />
           ) : viewMode === 'weekly' ? (
             <>
               {/* DESKTOP MODE: WEEKLY BREAKDOWN TABLE */}
@@ -663,7 +875,7 @@ export default function MobileFriendlyDashboard() {
           )}
 
           {wagesLoading ? (
-            <div className="p-12 text-center text-sm font-medium text-gray-400 bg-white rounded-xl border border-gray-200">Retrieving wages and hours data...</div>
+            <LoadingBlock label="Retrieving wages and hours data..." />
           ) : (
             <>
               {/* DESKTOP: wages detail table */}
@@ -785,7 +997,7 @@ export default function MobileFriendlyDashboard() {
           )}
 
           {budgetLoading ? (
-            <div className="p-12 text-center text-sm font-medium text-gray-400 bg-white rounded-xl border border-gray-200">Calculating hours used against budget...</div>
+            <LoadingBlock label="Calculating hours used against budget..." />
           ) : (
             <>
               {/* DESKTOP: budget status table */}
@@ -856,6 +1068,22 @@ export default function MobileFriendlyDashboard() {
 
       {tab === 'suppliers' && (
         <>
+          {supplierByBranch.length > 0 && (
+            <div className="mb-4 bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
+              <h2 className="text-xs font-semibold uppercase tracking-wider text-gray-500 mb-3">
+                {supplierFilter === 'all' ? 'All Suppliers' : supplierFilter} · by branch
+              </h2>
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+                {supplierByBranch.map(([store, amount]) => (
+                  <div key={store} className="bg-gray-50 rounded-lg p-3 border border-gray-100">
+                    <div className="text-xs text-gray-500 font-medium truncate" title={store}>{store}</div>
+                    <div className="text-sm font-bold text-gray-900">{formatGBP(amount)}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div className="flex justify-between items-center mb-4">
             <div className="text-sm text-gray-500">
               {supplierData.length} line{supplierData.length === 1 ? '' : 's'} · Total {formatGBP(supplierTotals.total)}{supplierTotals.vat > 0 ? ` (incl. ${formatGBP(supplierTotals.vat)} VAT)` : ''}
@@ -876,7 +1104,7 @@ export default function MobileFriendlyDashboard() {
           )}
 
           {supplierLoading ? (
-            <div className="p-12 text-center text-sm font-medium text-gray-400 bg-white rounded-xl border border-gray-200">Retrieving supplier invoices...</div>
+            <LoadingBlock label="Retrieving supplier invoices..." />
           ) : (
             <>
               {/* DESKTOP: supplier report table */}
@@ -957,6 +1185,58 @@ export default function MobileFriendlyDashboard() {
           )}
         </>
       )}
+
+      {tab === 'tree' && (
+        <>
+          <div className="flex flex-wrap justify-between items-center gap-2 mb-4">
+            <div className="text-sm text-gray-500">
+              Total for range: <span className="font-bold text-gray-900">{formatGBP(costTreeGrandTotal)}</span>
+            </div>
+            <div className="flex gap-2">
+              <button onClick={expandAllTree} className="text-xs font-medium text-blue-600 hover:text-blue-800 bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-lg transition">Expand Accounts</button>
+              <button onClick={collapseAllTree} className="text-xs font-medium text-gray-500 hover:text-gray-700 bg-gray-100 hover:bg-gray-200 px-3 py-1.5 rounded-lg transition">Collapse All</button>
+            </div>
+          </div>
+
+          {treeError && (
+            <div className="mb-4 p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm">
+              Couldn&apos;t load the cost tree: {treeError}
+            </div>
+          )}
+
+          {treeLoading ? (
+            <LoadingBlock label="Building cost tree..." />
+          ) : Object.keys(costTree).length === 0 ? (
+            <div className="p-8 text-center text-gray-400 bg-white rounded-xl border border-gray-200">No costs in this date range.</div>
+          ) : (
+            <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+              <div className="hidden sm:flex items-center gap-2 py-2.5 pr-3 pl-3 bg-gray-50 border-b border-gray-200 text-xs font-semibold uppercase tracking-wider text-gray-500">
+                <span className="w-4" />
+                <span className="flex-1">Account / Department / Store / Supplier</span>
+                <span className="hidden sm:block w-24 text-center">Share</span>
+                <span>Amount</span>
+              </div>
+              {sortedEntries(costTree).map(([name, node]) => (
+                <CostTreeRow
+                  key={name}
+                  name={name}
+                  node={node}
+                  path={name}
+                  level={0}
+                  expanded={expandedNodes}
+                  onToggle={toggleNode}
+                  formatGBP={formatGBP}
+                  parentTotal={costTreeGrandTotal}
+                />
+              ))}
+            </div>
+          )}
+          <p className="text-xs text-gray-400 mt-3">
+            Click any row with a ▶ to drill down: Account → Department → Store → Supplier → individual invoice lines.
+          </p>
+        </>
+      )}
+      </div>
     </div>
   );
 }
