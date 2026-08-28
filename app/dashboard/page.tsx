@@ -223,6 +223,7 @@ export default function MobileFriendlyDashboard() {
   // Column View Toggles
   const [showSales, setShowSales] = useState(true);
   const [showCosts, setShowCosts] = useState(true);
+  const [showGrossProfit, setShowGrossProfit] = useState(true);
   const [showProfit, setShowProfit] = useState(true);
 
   // --- Wages detail (filter by week / store / hours worked) ---------------
@@ -437,6 +438,7 @@ export default function MobileFriendlyDashboard() {
     const headers = [viewMode === 'weekly' ? 'Week' : 'Branch Name'];
     if (showSales) headers.push('Total Sales');
     if (showCosts) headers.push('Total Costs');
+    if (showGrossProfit) headers.push('Gross Profit %');
     if (showProfit) headers.push('Net Profit');
 
     const csvRows = [headers.join(',')];
@@ -446,6 +448,7 @@ export default function MobileFriendlyDashboard() {
       const values = [ `"${label.replace(/"/g, '""')}"` ];
       if (showSales) values.push(row.total_sales);
       if (showCosts) values.push(row.total_costs);
+      if (showGrossProfit) values.push(row.gross_profit_pct);
       if (showProfit) values.push(row.net_profit);
       csvRows.push(values.join(','));
     }
@@ -644,16 +647,28 @@ export default function MobileFriendlyDashboard() {
           </select>
         </div>
         {tab !== 'budget' ? (
-          <>
-            <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500 mb-1">Start Date</label>
-              <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="w-full rounded-lg border-gray-300 p-2 text-sm border focus:ring-2 focus:ring-blue-500 focus:outline-none" />
+          <div className="sm:col-span-2">
+            <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500 mb-1">Date Range</label>
+            <div className="flex items-center w-full rounded-lg border border-gray-300 bg-white focus-within:ring-2 focus-within:ring-blue-500 overflow-hidden">
+              <input
+                type="date"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                max={endDate}
+                aria-label="Start Date"
+                className="flex-1 min-w-0 p-2 text-sm border-0 focus:ring-0 focus:outline-none bg-transparent"
+              />
+              <span className="px-2 text-gray-400 text-sm select-none">to</span>
+              <input
+                type="date"
+                value={endDate}
+                onChange={(e) => setEndDate(e.target.value)}
+                min={startDate}
+                aria-label="End Date"
+                className="flex-1 min-w-0 p-2 text-sm border-0 focus:ring-0 focus:outline-none bg-transparent"
+              />
             </div>
-            <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500 mb-1">End Date</label>
-              <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="w-full rounded-lg border-gray-300 p-2 text-sm border focus:ring-2 focus:ring-blue-500 focus:outline-none" />
-            </div>
-          </>
+          </div>
         ) : (
           <div className="sm:col-span-2">
             <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500 mb-1">Quarter</label>
@@ -688,6 +703,7 @@ export default function MobileFriendlyDashboard() {
             <span className="font-semibold text-gray-500 text-xs uppercase tracking-wider">Metrics Shown:</span>
             <label className="flex items-center gap-2 font-medium cursor-pointer"><input type="checkbox" checked={showSales} onChange={() => setShowSales(!showSales)} className="rounded text-blue-600 focus:ring-blue-500 h-4 w-4" /> Sales</label>
             <label className="flex items-center gap-2 font-medium cursor-pointer"><input type="checkbox" checked={showCosts} onChange={() => setShowCosts(!showCosts)} className="rounded text-blue-600 focus:ring-blue-500 h-4 w-4" /> Costs</label>
+            <label className="flex items-center gap-2 font-medium cursor-pointer"><input type="checkbox" checked={showGrossProfit} onChange={() => setShowGrossProfit(!showGrossProfit)} className="rounded text-blue-600 focus:ring-blue-500 h-4 w-4" /> Gross Profit %</label>
             <label className="flex items-center gap-2 font-medium cursor-pointer"><input type="checkbox" checked={showProfit} onChange={() => setShowProfit(!showProfit)} className="rounded text-blue-600 focus:ring-blue-500 h-4 w-4" /> Profit</label>
             <div className="flex-1" />
             <button
@@ -728,6 +744,7 @@ export default function MobileFriendlyDashboard() {
                       <th className="px-6 py-3.5 text-left font-semibold text-gray-600">Week</th>
                       {showSales && <th className="px-6 py-3.5 text-left font-semibold text-gray-600">Total Sales</th>}
                       {showCosts && <th className="px-6 py-3.5 text-left font-semibold text-gray-600">Total Costs</th>}
+                      {showGrossProfit && <th className="px-6 py-3.5 text-left font-semibold text-gray-600">Gross Profit %</th>}
                       {showProfit && <th className="px-6 py-3.5 text-left font-semibold text-gray-600">Net Profit</th>}
                     </tr>
                   </thead>
@@ -740,6 +757,11 @@ export default function MobileFriendlyDashboard() {
                         <td className="px-6 py-4 font-semibold text-gray-900">{row.week_start} – {row.week_end}</td>
                         {showSales && <td className="px-6 py-4 font-medium text-green-600">{formatGBP(row.total_sales)}</td>}
                         {showCosts && <td className="px-6 py-4 font-medium text-red-600">{formatGBP(row.total_costs)}</td>}
+                        {showGrossProfit && (
+                          <td className="px-6 py-4 font-medium text-blue-600">
+                            {row.gross_profit_pct}%
+                          </td>
+                        )}
                         {showProfit && (
                           <td className={`px-6 py-4 font-bold ${row.net_profit >= 0 ? 'text-green-700' : 'text-red-700'}`}>
                             {formatGBP(row.net_profit)}
@@ -775,6 +797,12 @@ export default function MobileFriendlyDashboard() {
                           <div className="text-red-600 font-bold">{formatGBP(row.total_costs)}</div>
                         </div>
                       )}
+                      {showGrossProfit && (
+                        <div>
+                          <div className="text-xs text-gray-400 font-medium">Gross Profit %</div>
+                          <div className="text-blue-600 font-bold">{row.gross_profit_pct}%</div>
+                        </div>
+                      )}
                       {showProfit && (
                         <div className="col-span-2 pt-1 border-t border-dashed border-gray-100 mt-1">
                           <div className="text-xs text-gray-400 font-medium">Net Profit</div>
@@ -798,6 +826,7 @@ export default function MobileFriendlyDashboard() {
                       <th className="px-6 py-3.5 text-left font-semibold text-gray-600">Branch Name</th>
                       {showSales && <th className="px-6 py-3.5 text-left font-semibold text-gray-600">Total Sales</th>}
                       {showCosts && <th className="px-6 py-3.5 text-left font-semibold text-gray-600">Total Costs</th>}
+                      {showGrossProfit && <th className="px-6 py-3.5 text-left font-semibold text-gray-600">Gross Profit %</th>}
                       {showProfit && <th className="px-6 py-3.5 text-left font-semibold text-gray-600">Net Profit</th>}
                     </tr>
                   </thead>
@@ -807,6 +836,11 @@ export default function MobileFriendlyDashboard() {
                         <td className="px-6 py-4 font-semibold text-gray-900">{row.branch_name}</td>
                         {showSales && <td className="px-6 py-4 font-medium text-green-600">{formatGBP(row.total_sales)}</td>}
                         {showCosts && <td className="px-6 py-4 font-medium text-red-600">{formatGBP(row.total_costs)}</td>}
+                        {showGrossProfit && (
+                          <td className="px-6 py-4 font-medium text-blue-600">
+                            {row.gross_profit_pct}%
+                          </td>
+                        )}
                         {showProfit && (
                           <td className={`px-6 py-4 font-bold ${row.net_profit >= 0 ? 'text-green-700' : 'text-red-700'}`}>
                             {formatGBP(row.net_profit)}
@@ -837,6 +871,12 @@ export default function MobileFriendlyDashboard() {
                         <div>
                           <div className="text-xs text-gray-400 font-medium">Total Costs</div>
                           <div className="text-red-600 font-bold">{formatGBP(row.total_costs)}</div>
+                        </div>
+                      )}
+                      {showGrossProfit && (
+                        <div>
+                          <div className="text-xs text-gray-400 font-medium">Gross Profit %</div>
+                          <div className="text-blue-600 font-bold">{row.gross_profit_pct}%</div>
                         </div>
                       )}
                       {showProfit && (
