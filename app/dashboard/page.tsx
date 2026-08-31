@@ -198,6 +198,16 @@ function getCurrentQuarterStart() {
   return `${chosenYear}-${pad2(chosenMonth)}-01`;
 }
 
+// Given a fiscal quarter start (Feb/May/Aug/Nov 1st), returns that quarter's
+// end date -- mirrors the Postgres quarter_end_for() helper so the frontend
+// and database always agree on where a quarter ends.
+function quarterEndFromStart(qStartStr: string): string {
+  const d = new Date(qStartStr + 'T00:00:00');
+  d.setMonth(d.getMonth() + 3);
+  d.setDate(d.getDate() - 1);
+  return d.toISOString().slice(0, 10);
+}
+
 export default function MobileFriendlyDashboard() {
   const [tab, setTab] = useState<Tab>('overview');
 
@@ -213,6 +223,12 @@ export default function MobileFriendlyDashboard() {
   // 'total' = single totals row/table for the selected range (existing view)
   // 'weekly' = one row per week across the selected range
   const [viewMode, setViewMode] = useState<'total' | 'weekly'>('total');
+
+  // Lets any date-range tab (Overview, Wages, Suppliers, Cost Tree, Projections)
+  // be driven by a fiscal quarter picker instead of manual Start/End dates.
+  // Picking a quarter sets startDate/endDate to that quarter's bounds.
+  const [dateMode, setDateMode] = useState<'range' | 'quarter'>('range');
+  const [reportQuarter, setReportQuarter] = useState<string>(() => getCurrentQuarterStart());
 
   // Settings panel: lets you change which Start Date the dashboard opens
   // with by default. Starts blank; filled in from localStorage on mount.
@@ -251,6 +267,8 @@ export default function MobileFriendlyDashboard() {
 
   // --- Projections (projected vs actual, from the "projections" table) ---
   const [projectionsData, setProjectionsData] = useState<any[]>([]);
+  const [projectionsWeeklyData, setProjectionsWeeklyData] = useState<any[]>([]);
+  const [projectionsViewMode, setProjectionsViewMode] = useState<'total' | 'weekly'>('total');
   const [projectionsLoading, setProjectionsLoading] = useState(false);
   const [projectionsError, setProjectionsError] = useState<string | null>(null);
 
@@ -335,6 +353,14 @@ export default function MobileFriendlyDashboard() {
     setLoading(false);
   }
 
+  // Sets startDate/endDate to the bounds of the chosen fiscal quarter.
+  // Called whenever dateMode is 'quarter' and reportQuarter changes.
+  function applyQuarterToRange(qStart: string) {
+    setReportQuarter(qStart);
+    setStartDate(qStart);
+    setEndDate(quarterEndFromStart(qStart));
+  }
+
   async function fetchProjectionsReport() {
     setProjectionsLoading(true);
     setProjectionsError(null);
@@ -345,6 +371,19 @@ export default function MobileFriendlyDashboard() {
     });
     if (error) setProjectionsError(error.message);
     else if (data) setProjectionsData(data);
+    setProjectionsLoading(false);
+  }
+
+  async function fetchProjectionsWeeklyReport() {
+    setProjectionsLoading(true);
+    setProjectionsError(null);
+    const { data, error } = await supabase.rpc('get_projections_report_weekly', {
+      start_date: startDate,
+      end_date: endDate,
+      branch_id_param: branchId === 'all' ? null : parseInt(branchId)
+    });
+    if (error) setProjectionsError(error.message);
+    else if (data) setProjectionsWeeklyData(data);
     setProjectionsLoading(false);
   }
 
@@ -418,8 +457,10 @@ export default function MobileFriendlyDashboard() {
   }, [tab, startDate, endDate, branchId]);
 
   useEffect(() => {
-    if (tab === 'projections') fetchProjectionsReport();
-  }, [tab, startDate, endDate, branchId]);
+    if (tab !== 'projections') return;
+    if (projectionsViewMode === 'weekly') fetchProjectionsWeeklyReport();
+    else fetchProjectionsReport();
+  }, [tab, startDate, endDate, branchId, projectionsViewMode]);
 
   useEffect(() => {
     if (tab === 'budget') fetchBudgetStatus();
@@ -511,12 +552,14 @@ export default function MobileFriendlyDashboard() {
   };
 
   const downloadProjectionsCSV = () => {
-    if (projectionsData.length === 0) return;
-    const headers = ['Store', 'Projected Turnover', 'Actual Sales', 'Sales Variance', 'Sales Variance %', 'Projected GP %', 'Actual GP %', 'GP Variance', 'Projected Waste %'];
+    const activeData = projectionsViewMode === 'weekly' ? projectionsWeeklyData : projectionsData;
+    if (activeData.length === 0) return;
+    const headers = [projectionsViewMode === 'weekly' ? 'Week' : 'Store', 'Projected Turnover', 'Actual Sales', 'Sales Variance', 'Sales Variance %', 'Projected GP %', 'Actual GP %', 'GP Variance', 'Projected Waste %'];
     const csvRows = [headers.join(',')];
-    for (const row of projectionsData) {
+    for (const row of activeData) {
+      const label = projectionsViewMode === 'weekly' ? `${row.week_start} to ${row.week_end}` : row.branch_name;
       csvRows.push([
-        `"${String(row.branch_name).replace(/"/g, '""')}"`,
+        `"${String(label).replace(/"/g, '""')}"`,
         row.projected_turnover, row.actual_sales, row.sales_variance, row.sales_variance_pct,
         row.projected_gp_pct, row.actual_gp_pct, row.gp_variance_pct, row.projected_waste_pct,
       ].join(','));
@@ -693,26 +736,59 @@ export default function MobileFriendlyDashboard() {
         </div>
         {tab !== 'budget' ? (
           <div className="sm:col-span-2">
-            <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500 mb-1">Date Range</label>
-            <div className="flex items-center w-full rounded-lg border border-gray-300 bg-white focus-within:ring-2 focus-within:ring-blue-500 overflow-hidden">
-              <input
-                type="date"
-                value={startDate}
-                onChange={(e) => setStartDate(e.target.value)}
-                max={endDate}
-                aria-label="Start Date"
-                className="flex-1 min-w-0 p-2 text-sm border-0 focus:ring-0 focus:outline-none bg-transparent"
-              />
-              <span className="px-2 text-gray-400 text-sm select-none">to</span>
-              <input
-                type="date"
-                value={endDate}
-                onChange={(e) => setEndDate(e.target.value)}
-                min={startDate}
-                aria-label="End Date"
-                className="flex-1 min-w-0 p-2 text-sm border-0 focus:ring-0 focus:outline-none bg-transparent"
-              />
+            <div className="flex items-center justify-between mb-1">
+              <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500">
+                {dateMode === 'quarter' ? 'Quarter' : 'Date Range'}
+              </label>
+              <div className="flex gap-1 bg-gray-100 rounded-md p-0.5">
+                <button
+                  type="button"
+                  onClick={() => setDateMode('range')}
+                  className={`text-xs font-medium px-2 py-0.5 rounded transition ${dateMode === 'range' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500'}`}
+                >
+                  Range
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setDateMode('quarter'); applyQuarterToRange(reportQuarter); }}
+                  className={`text-xs font-medium px-2 py-0.5 rounded transition ${dateMode === 'quarter' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500'}`}
+                >
+                  Quarter
+                </button>
+              </div>
             </div>
+            {dateMode === 'range' ? (
+              <div className="flex items-center w-full rounded-lg border border-gray-300 bg-white focus-within:ring-2 focus-within:ring-blue-500 overflow-hidden">
+                <input
+                  type="date"
+                  value={startDate}
+                  onChange={(e) => setStartDate(e.target.value)}
+                  max={endDate}
+                  aria-label="Start Date"
+                  className="flex-1 min-w-0 p-2 text-sm border-0 focus:ring-0 focus:outline-none bg-transparent"
+                />
+                <span className="px-2 text-gray-400 text-sm select-none">to</span>
+                <input
+                  type="date"
+                  value={endDate}
+                  onChange={(e) => setEndDate(e.target.value)}
+                  min={startDate}
+                  aria-label="End Date"
+                  className="flex-1 min-w-0 p-2 text-sm border-0 focus:ring-0 focus:outline-none bg-transparent"
+                />
+              </div>
+            ) : (
+              <div>
+                <select
+                  value={reportQuarter}
+                  onChange={(e) => applyQuarterToRange(e.target.value)}
+                  className="w-full rounded-lg border-gray-300 p-2 text-sm border focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                >
+                  {quarterOptions.map(q => <option key={q.value} value={q.value}>{q.label}</option>)}
+                </select>
+                <p className="text-xs text-gray-400 mt-1">Runs {startDate} to {endDate} -- weekly views for this range start counting from the quarter's 1st, so the final week may be partial.</p>
+              </div>
+            )}
           </div>
         ) : (
           <div className="sm:col-span-2">
@@ -951,13 +1027,25 @@ export default function MobileFriendlyDashboard() {
               week's projection against a full range of actuals, which will look skewed. Pick a
               date range matching the period your projections cover for a meaningful comparison.
             </p>
-            <button
-              onClick={downloadProjectionsCSV}
-              disabled={projectionsData.length === 0}
-              className="inline-flex items-center justify-center bg-blue-600 hover:bg-blue-700 text-white font-medium text-sm py-2.5 px-4 rounded-lg shadow-sm transition disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
-            >
-              📥 Download CSV
-            </button>
+            <div className="flex gap-2 shrink-0">
+              <button
+                onClick={() => setProjectionsViewMode(projectionsViewMode === 'weekly' ? 'total' : 'weekly')}
+                className={`inline-flex items-center justify-center font-medium text-sm py-2.5 px-4 rounded-lg shadow-sm border transition ${
+                  projectionsViewMode === 'weekly'
+                    ? 'bg-blue-600 hover:bg-blue-700 text-white border-blue-600'
+                    : 'bg-white hover:bg-gray-50 text-gray-700 border-gray-200'
+                }`}
+              >
+                📅 {projectionsViewMode === 'weekly' ? 'Viewing by Week' : 'View by Week'}
+              </button>
+              <button
+                onClick={downloadProjectionsCSV}
+                disabled={(projectionsViewMode === 'weekly' ? projectionsWeeklyData : projectionsData).length === 0}
+                className="inline-flex items-center justify-center bg-blue-600 hover:bg-blue-700 text-white font-medium text-sm py-2.5 px-4 rounded-lg shadow-sm transition disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                📥 Download CSV
+              </button>
+            </div>
           </div>
 
           {projectionsError && (
@@ -968,6 +1056,78 @@ export default function MobileFriendlyDashboard() {
 
           {projectionsLoading ? (
             <LoadingBlock label="Comparing projections against actuals..." />
+          ) : projectionsViewMode === 'weekly' ? (
+            <>
+              {/* DESKTOP: weekly projections vs actuals table */}
+              <div className="hidden md:block bg-white rounded-xl border border-gray-200 shadow-sm overflow-x-auto">
+                <table className="min-w-full divide-y divide-gray-200 text-sm">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-4 py-3.5 text-left font-semibold text-gray-600">Week</th>
+                      <th className="px-4 py-3.5 text-right font-semibold text-gray-600">Projected Turnover</th>
+                      <th className="px-4 py-3.5 text-right font-semibold text-gray-600">Actual Sales</th>
+                      <th className="px-4 py-3.5 text-right font-semibold text-gray-600">Variance</th>
+                      <th className="px-4 py-3.5 text-right font-semibold text-gray-600">Variance %</th>
+                      <th className="px-4 py-3.5 text-right font-semibold text-gray-600">Projected GP %</th>
+                      <th className="px-4 py-3.5 text-right font-semibold text-gray-600">Actual GP %</th>
+                      <th className="px-4 py-3.5 text-right font-semibold text-gray-600">GP Variance</th>
+                      <th className="px-4 py-3.5 text-right font-semibold text-gray-600">Projected Waste %</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200 bg-white">
+                    {projectionsWeeklyData.length === 0 && (
+                      <tr><td className="px-4 py-8 text-center text-gray-400" colSpan={9}>No data in this date range.</td></tr>
+                    )}
+                    {projectionsWeeklyData.map((row, idx) => {
+                      const salesOver = row.sales_variance >= 0;
+                      const gpOver = row.gp_variance_pct == null ? null : row.gp_variance_pct >= 0;
+                      return (
+                        <tr key={idx} className="hover:bg-gray-50 transition">
+                          <td className="px-4 py-3 font-semibold text-gray-900 whitespace-nowrap">{row.week_start} – {row.week_end}</td>
+                          <td className="px-4 py-3 text-right text-gray-700">{formatGBP(row.projected_turnover)}</td>
+                          <td className="px-4 py-3 text-right text-gray-700">{formatGBP(row.actual_sales)}</td>
+                          <td className={`px-4 py-3 text-right font-semibold ${salesOver ? 'text-green-700' : 'text-red-700'}`}>{formatGBP(row.sales_variance)}</td>
+                          <td className={`px-4 py-3 text-right font-semibold ${salesOver ? 'text-green-700' : 'text-red-700'}`}>{row.sales_variance_pct == null ? '—' : `${row.sales_variance_pct}%`}</td>
+                          <td className="px-4 py-3 text-right text-gray-700">{row.projected_gp_pct == null ? '—' : `${row.projected_gp_pct}%`}</td>
+                          <td className="px-4 py-3 text-right text-gray-700">{row.actual_gp_pct == null ? '—' : `${row.actual_gp_pct}%`}</td>
+                          <td className={`px-4 py-3 text-right font-semibold ${gpOver == null ? 'text-gray-400' : gpOver ? 'text-green-700' : 'text-red-700'}`}>{row.gp_variance_pct == null ? '—' : `${row.gp_variance_pct}%`}</td>
+                          <td className="px-4 py-3 text-right text-gray-700">{row.projected_waste_pct == null ? '—' : `${row.projected_waste_pct}%`}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* MOBILE: weekly projections vs actuals cards */}
+              <div className="block md:hidden space-y-4">
+                {projectionsWeeklyData.length === 0 && (
+                  <div className="p-8 text-center text-gray-400 bg-white rounded-xl border border-gray-200">No data in this date range.</div>
+                )}
+                {projectionsWeeklyData.map((row, idx) => {
+                  const salesOver = row.sales_variance >= 0;
+                  const gpOver = row.gp_variance_pct == null ? null : row.gp_variance_pct >= 0;
+                  return (
+                    <div key={idx} className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm space-y-3">
+                      <div className="border-b border-gray-100 pb-2">
+                        <span className="text-base font-bold text-gray-900">{row.week_start} – {row.week_end}</span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-3 text-sm">
+                        <div><div className="text-xs text-gray-400 font-medium">Projected Turnover</div><div className="font-semibold">{formatGBP(row.projected_turnover)}</div></div>
+                        <div><div className="text-xs text-gray-400 font-medium">Actual Sales</div><div className="font-semibold">{formatGBP(row.actual_sales)}</div></div>
+                        <div><div className="text-xs text-gray-400 font-medium">Variance</div><div className={`font-bold ${salesOver ? 'text-green-700' : 'text-red-700'}`}>{formatGBP(row.sales_variance)} ({row.sales_variance_pct == null ? '—' : `${row.sales_variance_pct}%`})</div></div>
+                        <div><div className="text-xs text-gray-400 font-medium">Projected Waste %</div><div className="font-semibold">{row.projected_waste_pct == null ? '—' : `${row.projected_waste_pct}%`}</div></div>
+                      </div>
+                      <div className="pt-2 border-t border-dashed border-gray-100 grid grid-cols-3 gap-3 text-sm">
+                        <div><div className="text-xs text-gray-400 font-medium">Projected GP %</div><div className="font-semibold">{row.projected_gp_pct == null ? '—' : `${row.projected_gp_pct}%`}</div></div>
+                        <div><div className="text-xs text-gray-400 font-medium">Actual GP %</div><div className="font-semibold">{row.actual_gp_pct == null ? '—' : `${row.actual_gp_pct}%`}</div></div>
+                        <div><div className="text-xs text-gray-400 font-medium">GP Variance</div><div className={`font-bold ${gpOver == null ? 'text-gray-400' : gpOver ? 'text-green-700' : 'text-red-700'}`}>{row.gp_variance_pct == null ? '—' : `${row.gp_variance_pct}%`}</div></div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
           ) : (
             <>
               {/* DESKTOP: projections vs actuals table */}
