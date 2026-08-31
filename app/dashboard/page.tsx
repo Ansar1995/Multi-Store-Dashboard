@@ -15,7 +15,7 @@ const supabase = createClient(supabaseUrl, supabaseAnonKey);
 const DEFAULT_START_DATE_KEY = 'msd_default_start_date';
 const FALLBACK_START_DATE = '2026-01-01';
 
-type Tab = 'overview' | 'wages' | 'budget' | 'suppliers' | 'tree';
+type Tab = 'overview' | 'wages' | 'budget' | 'suppliers' | 'tree' | 'projections';
 
 type CostTreeNode = {
   total: number;
@@ -249,6 +249,11 @@ export default function MobileFriendlyDashboard() {
   const [supplierLoading, setSupplierLoading] = useState(false);
   const [supplierError, setSupplierError] = useState<string | null>(null);
 
+  // --- Projections (projected vs actual, from the "projections" table) ---
+  const [projectionsData, setProjectionsData] = useState<any[]>([]);
+  const [projectionsLoading, setProjectionsLoading] = useState(false);
+  const [projectionsError, setProjectionsError] = useState<string | null>(null);
+
   // --- Cost tree (Account -> Dept -> Store -> Supplier -> line items) -----
   const [treeData, setTreeData] = useState<any[]>([]);
   const [treeLoading, setTreeLoading] = useState(false);
@@ -330,6 +335,19 @@ export default function MobileFriendlyDashboard() {
     setLoading(false);
   }
 
+  async function fetchProjectionsReport() {
+    setProjectionsLoading(true);
+    setProjectionsError(null);
+    const { data, error } = await supabase.rpc('get_projections_report', {
+      start_date: startDate,
+      end_date: endDate,
+      branch_id_param: branchId === 'all' ? null : parseInt(branchId)
+    });
+    if (error) setProjectionsError(error.message);
+    else if (data) setProjectionsData(data);
+    setProjectionsLoading(false);
+  }
+
   async function fetchWagesDetail() {
     setWagesLoading(true);
     setWagesError(null);
@@ -397,6 +415,10 @@ export default function MobileFriendlyDashboard() {
 
   useEffect(() => {
     if (tab === 'wages') fetchWagesDetail();
+  }, [tab, startDate, endDate, branchId]);
+
+  useEffect(() => {
+    if (tab === 'projections') fetchProjectionsReport();
   }, [tab, startDate, endDate, branchId]);
 
   useEffect(() => {
@@ -482,6 +504,28 @@ export default function MobileFriendlyDashboard() {
     const link = document.createElement('a');
     link.setAttribute('href', url);
     link.setAttribute('download', `wages_detail_${startDate}_to_${endDate}.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const downloadProjectionsCSV = () => {
+    if (projectionsData.length === 0) return;
+    const headers = ['Store', 'Projected Turnover', 'Actual Sales', 'Sales Variance', 'Sales Variance %', 'Projected GP %', 'Actual GP %', 'GP Variance', 'Projected Waste %'];
+    const csvRows = [headers.join(',')];
+    for (const row of projectionsData) {
+      csvRows.push([
+        `"${String(row.branch_name).replace(/"/g, '""')}"`,
+        row.projected_turnover, row.actual_sales, row.sales_variance, row.sales_variance_pct,
+        row.projected_gp_pct, row.actual_gp_pct, row.gp_variance_pct, row.projected_waste_pct,
+      ].join(','));
+    }
+    const blob = new Blob([csvRows.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', `projections_report_${startDate}_to_${endDate}.csv`);
     link.style.visibility = 'hidden';
     document.body.appendChild(link);
     link.click();
@@ -581,6 +625,7 @@ export default function MobileFriendlyDashboard() {
           <div className="flex gap-1 bg-white p-1 rounded-xl border border-gray-200 shadow-sm w-full sm:w-fit overflow-x-auto">
             {([
               ['overview', '📈 Overview'],
+              ['projections', '🔮 Projections'],
               ['wages', '🧾 Wages & Hours'],
               ['budget', '🎯 Hours Budget'],
               ['suppliers', '🚚 Suppliers'],
@@ -890,6 +935,109 @@ export default function MobileFriendlyDashboard() {
                     </div>
                   </div>
                 ))}
+              </div>
+            </>
+          )}
+        </>
+      )}
+
+      {tab === 'projections' && (
+        <>
+          <div className="flex flex-wrap justify-between items-center gap-2 mb-4">
+            <p className="text-xs text-gray-400 max-w-xl">
+              Compares actual results against the store-level targets from your Projections upload.
+              Projections are only as granular as the periods you've imported -- if you've only
+              loaded one week of targets, picking a wider date range here will compare that single
+              week's projection against a full range of actuals, which will look skewed. Pick a
+              date range matching the period your projections cover for a meaningful comparison.
+            </p>
+            <button
+              onClick={downloadProjectionsCSV}
+              disabled={projectionsData.length === 0}
+              className="inline-flex items-center justify-center bg-blue-600 hover:bg-blue-700 text-white font-medium text-sm py-2.5 px-4 rounded-lg shadow-sm transition disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+            >
+              📥 Download CSV
+            </button>
+          </div>
+
+          {projectionsError && (
+            <div className="mb-4 p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm">
+              Couldn&apos;t load projections: {projectionsError}
+            </div>
+          )}
+
+          {projectionsLoading ? (
+            <LoadingBlock label="Comparing projections against actuals..." />
+          ) : (
+            <>
+              {/* DESKTOP: projections vs actuals table */}
+              <div className="hidden md:block bg-white rounded-xl border border-gray-200 shadow-sm overflow-x-auto">
+                <table className="min-w-full divide-y divide-gray-200 text-sm">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-4 py-3.5 text-left font-semibold text-gray-600">Store</th>
+                      <th className="px-4 py-3.5 text-right font-semibold text-gray-600">Projected Turnover</th>
+                      <th className="px-4 py-3.5 text-right font-semibold text-gray-600">Actual Sales</th>
+                      <th className="px-4 py-3.5 text-right font-semibold text-gray-600">Variance</th>
+                      <th className="px-4 py-3.5 text-right font-semibold text-gray-600">Variance %</th>
+                      <th className="px-4 py-3.5 text-right font-semibold text-gray-600">Projected GP %</th>
+                      <th className="px-4 py-3.5 text-right font-semibold text-gray-600">Actual GP %</th>
+                      <th className="px-4 py-3.5 text-right font-semibold text-gray-600">GP Variance</th>
+                      <th className="px-4 py-3.5 text-right font-semibold text-gray-600">Projected Waste %</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200 bg-white">
+                    {projectionsData.length === 0 && (
+                      <tr><td className="px-4 py-8 text-center text-gray-400" colSpan={9}>No projections uploaded for this date range.</td></tr>
+                    )}
+                    {projectionsData.map((row, idx) => {
+                      const salesOver = row.sales_variance >= 0;
+                      const gpOver = row.gp_variance_pct == null ? null : row.gp_variance_pct >= 0;
+                      return (
+                        <tr key={idx} className="hover:bg-gray-50 transition">
+                          <td className="px-4 py-3 font-semibold text-gray-900 whitespace-nowrap">{row.branch_name}</td>
+                          <td className="px-4 py-3 text-right text-gray-700">{formatGBP(row.projected_turnover)}</td>
+                          <td className="px-4 py-3 text-right text-gray-700">{formatGBP(row.actual_sales)}</td>
+                          <td className={`px-4 py-3 text-right font-semibold ${salesOver ? 'text-green-700' : 'text-red-700'}`}>{formatGBP(row.sales_variance)}</td>
+                          <td className={`px-4 py-3 text-right font-semibold ${salesOver ? 'text-green-700' : 'text-red-700'}`}>{row.sales_variance_pct == null ? '—' : `${row.sales_variance_pct}%`}</td>
+                          <td className="px-4 py-3 text-right text-gray-700">{row.projected_gp_pct == null ? '—' : `${row.projected_gp_pct}%`}</td>
+                          <td className="px-4 py-3 text-right text-gray-700">{row.actual_gp_pct == null ? '—' : `${row.actual_gp_pct}%`}</td>
+                          <td className={`px-4 py-3 text-right font-semibold ${gpOver == null ? 'text-gray-400' : gpOver ? 'text-green-700' : 'text-red-700'}`}>{row.gp_variance_pct == null ? '—' : `${row.gp_variance_pct}%`}</td>
+                          <td className="px-4 py-3 text-right text-gray-700">{row.projected_waste_pct == null ? '—' : `${row.projected_waste_pct}%`}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* MOBILE: projections vs actuals cards */}
+              <div className="block md:hidden space-y-4">
+                {projectionsData.length === 0 && (
+                  <div className="p-8 text-center text-gray-400 bg-white rounded-xl border border-gray-200">No projections uploaded for this date range.</div>
+                )}
+                {projectionsData.map((row, idx) => {
+                  const salesOver = row.sales_variance >= 0;
+                  const gpOver = row.gp_variance_pct == null ? null : row.gp_variance_pct >= 0;
+                  return (
+                    <div key={idx} className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm space-y-3">
+                      <div className="border-b border-gray-100 pb-2">
+                        <span className="text-base font-bold text-gray-900">{row.branch_name}</span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-3 text-sm">
+                        <div><div className="text-xs text-gray-400 font-medium">Projected Turnover</div><div className="font-semibold">{formatGBP(row.projected_turnover)}</div></div>
+                        <div><div className="text-xs text-gray-400 font-medium">Actual Sales</div><div className="font-semibold">{formatGBP(row.actual_sales)}</div></div>
+                        <div><div className="text-xs text-gray-400 font-medium">Variance</div><div className={`font-bold ${salesOver ? 'text-green-700' : 'text-red-700'}`}>{formatGBP(row.sales_variance)} ({row.sales_variance_pct == null ? '—' : `${row.sales_variance_pct}%`})</div></div>
+                        <div><div className="text-xs text-gray-400 font-medium">Projected Waste %</div><div className="font-semibold">{row.projected_waste_pct == null ? '—' : `${row.projected_waste_pct}%`}</div></div>
+                      </div>
+                      <div className="pt-2 border-t border-dashed border-gray-100 grid grid-cols-3 gap-3 text-sm">
+                        <div><div className="text-xs text-gray-400 font-medium">Projected GP %</div><div className="font-semibold">{row.projected_gp_pct == null ? '—' : `${row.projected_gp_pct}%`}</div></div>
+                        <div><div className="text-xs text-gray-400 font-medium">Actual GP %</div><div className="font-semibold">{row.actual_gp_pct == null ? '—' : `${row.actual_gp_pct}%`}</div></div>
+                        <div><div className="text-xs text-gray-400 font-medium">GP Variance</div><div className={`font-bold ${gpOver == null ? 'text-gray-400' : gpOver ? 'text-green-700' : 'text-red-700'}`}>{row.gp_variance_pct == null ? '—' : `${row.gp_variance_pct}%`}</div></div>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </>
           )}
