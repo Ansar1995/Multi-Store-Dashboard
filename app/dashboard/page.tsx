@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, Fragment } from 'react';
 import { createClient } from '@supabase/supabase-js';
 
 // This pulls your keys safely from your .env.local file
@@ -306,6 +306,10 @@ export default function MobileFriendlyDashboard() {
   const [branches, setBranches] = useState<any[]>([]);
   const [reportData, setReportData] = useState<any[]>([]);
   const [weeklyData, setWeeklyData] = useState<any[]>([]);
+  const [expandedWeek, setExpandedWeek] = useState<string | null>(null);
+  const [dailySalesByWeek, setDailySalesByWeek] = useState<Record<string, any[]>>({});
+  const [dailySalesLoading, setDailySalesLoading] = useState<Record<string, boolean>>({});
+  const [dailySalesError, setDailySalesError] = useState<Record<string, string | null>>({});
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -451,6 +455,9 @@ export default function MobileFriendlyDashboard() {
   async function fetchWeeklyReport() {
     setLoading(true);
     setErrorMsg(null);
+    setExpandedWeek(null);
+    setDailySalesByWeek({});
+    setDailySalesError({});
     const { data, error } = await supabase.rpc('get_sales_report_weekly', {
       start_date: startDate,
       end_date: endDate,
@@ -460,6 +467,54 @@ export default function MobileFriendlyDashboard() {
     if (error) setErrorMsg(error.message);
     else if (data) setWeeklyData(data);
     setLoading(false);
+  }
+
+  // Loads the day-by-day sales breakdown for the tapped week AND the 2
+  // weeks immediately before it (3 weeks total), so you can compare the
+  // week you tapped against recent trend. Cached per week_start so
+  // re-opening a row you already expanded doesn't re-fetch.
+  async function fetchDailySalesForWeek(weekStart: string, weekEnd: string) {
+    if (dailySalesByWeek[weekStart]) return;
+    setDailySalesLoading(prev => ({ ...prev, [weekStart]: true }));
+    setDailySalesError(prev => ({ ...prev, [weekStart]: null }));
+    const extendedStart = shiftDate(weekStart, -14); // 2 weeks (14 days) before the tapped week's start
+    const { data, error } = await supabase.rpc('get_sales_report_daily', {
+      start_date: extendedStart,
+      end_date: weekEnd,
+      branch_id_param: branchId === 'all' ? null : parseInt(branchId)
+    });
+    if (error) setDailySalesError(prev => ({ ...prev, [weekStart]: error.message }));
+    else if (data) setDailySalesByWeek(prev => ({ ...prev, [weekStart]: data }));
+    setDailySalesLoading(prev => ({ ...prev, [weekStart]: false }));
+  }
+
+  // Splits the flat 3-week daily array into 3 labelled buckets: the 2 weeks
+  // before the tapped week, and the tapped week itself.
+  function groupDailyIntoWeeks(rows: any[], weekStart: string, weekEnd: string) {
+    const week1Start = shiftDate(weekStart, -14);
+    const week2Start = shiftDate(weekStart, -7);
+    const buckets = [
+      { label: `Week of ${week1Start} – ${shiftDate(week2Start, -1)}`, rows: [] as any[] },
+      { label: `Week of ${week2Start} – ${shiftDate(weekStart, -1)}`, rows: [] as any[] },
+      { label: `Tapped week: ${weekStart} – ${weekEnd}`, rows: [] as any[] },
+    ];
+    for (const r of rows) {
+      if (r.day < week2Start) buckets[0].rows.push(r);
+      else if (r.day < weekStart) buckets[1].rows.push(r);
+      else buckets[2].rows.push(r);
+    }
+    return buckets;
+  }
+
+  // Tapping a week row toggles its daily breakdown open/closed, fetching
+  // it the first time.
+  function toggleWeekExpanded(weekStart: string, weekEnd: string) {
+    if (expandedWeek === weekStart) {
+      setExpandedWeek(null);
+      return;
+    }
+    setExpandedWeek(weekStart);
+    fetchDailySalesForWeek(weekStart, weekEnd);
   }
 
   // Sets startDate/endDate to the bounds of the chosen period (a quarter,
@@ -604,6 +659,17 @@ export default function MobileFriendlyDashboard() {
 
   const formatHours = (n: number) =>
     new Intl.NumberFormat('en-GB', { maximumFractionDigits: 1 }).format(n || 0);
+
+  // Format an ISO date as "Mon 24 Aug" for the daily breakdown under a week.
+  const formatDayLabel = (isoDate: string) =>
+    new Date(isoDate + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+
+  // Shifts an ISO date string by N days (negative = earlier).
+  const shiftDate = (isoDate: string, days: number) => {
+    const d = new Date(isoDate + 'T00:00:00');
+    d.setDate(d.getDate() + days);
+    return d.toISOString().slice(0, 10);
+  };
 
   // 📥 Function to Convert Data and Download CSV File
   const downloadCSV = () => {
@@ -792,14 +858,6 @@ export default function MobileFriendlyDashboard() {
                 <p className="text-xs sm:text-sm text-gray-500">Multi-store sales, cost and wages analytics</p>
               </div>
             </div>
-            <div className="flex flex-wrap w-full sm:w-auto gap-2">
-              <button
-                onClick={() => setShowSettings(!showSettings)}
-                className="inline-flex items-center justify-center bg-white hover:bg-gray-50 text-gray-700 font-medium text-sm py-2.5 px-4 rounded-lg shadow-sm border border-gray-200 transition"
-              >
-                ⚙️ Settings
-              </button>
-            </div>
           </div>
 
           {/* 🗂️ TABS */}
@@ -822,6 +880,14 @@ export default function MobileFriendlyDashboard() {
                 {label}
               </button>
             ))}
+            <button
+              onClick={() => setShowSettings(!showSettings)}
+              className={`whitespace-nowrap px-4 py-2 rounded-lg text-sm font-medium transition ${
+                showSettings ? 'bg-blue-600 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-100'
+              }`}
+            >
+              ⚙️ Settings
+            </button>
           </div>
         </div>
       </div>
@@ -975,7 +1041,7 @@ export default function MobileFriendlyDashboard() {
         <>
           {includeProjected && projectedExtraTotal > 0 && (
             <div className="mb-4 p-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 text-sm">
-              🔮 Total Costs and Net Profit include <span className="font-semibold">{formatGBP(projectedExtraTotal)}</span> of projected management fee, finance costs and misc for the part of this period that hasn't been invoiced yet.
+              🔮 <span className="font-semibold">Projected costs included</span> — {formatGBP(projectedExtraTotal)} of management fee, finance costs and misc for the part of this period that hasn't been invoiced yet.
             </div>
           )}
           {/* 🔍 FLEXIBLE COLUMN CHANGER BAR + view/download actions */}
@@ -1033,21 +1099,57 @@ export default function MobileFriendlyDashboard() {
                       <tr><td className="px-6 py-8 text-center text-gray-400" colSpan={4}>No data in this date range.</td></tr>
                     )}
                     {weeklyData.map((row, idx) => (
-                      <tr key={idx} className="hover:bg-gray-50 transition">
-                        <td className="px-6 py-4 font-semibold text-gray-900">{row.week_start} – {row.week_end}</td>
-                        {showSales && <td className="px-6 py-4 font-medium text-green-600">{formatGBP(row.total_sales)}</td>}
-                        {showCosts && <td className="px-6 py-4 font-medium text-red-600">{formatGBP(row.total_costs)}</td>}
-                        {showGrossProfit && (
-                          <td className="px-6 py-4 font-medium text-blue-600">
-                            {row.gross_profit_pct}%
+                      <Fragment key={idx}>
+                        <tr
+                          className="hover:bg-gray-50 transition cursor-pointer"
+                          onClick={() => toggleWeekExpanded(row.week_start, row.week_end)}
+                          aria-expanded={expandedWeek === row.week_start}
+                        >
+                          <td className="px-6 py-4 font-semibold text-gray-900">
+                            <span className={`inline-block mr-1.5 text-gray-400 transition-transform ${expandedWeek === row.week_start ? 'rotate-90' : ''}`}>▶</span>
+                            {row.week_start} – {row.week_end}
                           </td>
+                          {showSales && <td className="px-6 py-4 font-medium text-green-600">{formatGBP(row.total_sales)}</td>}
+                          {showCosts && <td className="px-6 py-4 font-medium text-red-600">{formatGBP(row.total_costs)}</td>}
+                          {showGrossProfit && (
+                            <td className="px-6 py-4 font-medium text-blue-600">
+                              {row.gross_profit_pct}%
+                            </td>
+                          )}
+                          {showProfit && (
+                            <td className={`px-6 py-4 font-bold ${row.net_profit >= 0 ? 'text-green-700' : 'text-red-700'}`}>
+                              {formatGBP(row.net_profit)}
+                            </td>
+                          )}
+                        </tr>
+                        {expandedWeek === row.week_start && (
+                          <tr>
+                            <td colSpan={1 + [showSales, showCosts, showGrossProfit, showProfit].filter(Boolean).length} className="bg-gray-50 px-6 py-4">
+                              {dailySalesLoading[row.week_start] ? (
+                                <div className="text-sm text-gray-400 py-2">Loading daily sales…</div>
+                              ) : dailySalesError[row.week_start] ? (
+                                <div className="text-sm text-red-600 py-2">Couldn&apos;t load daily sales: {dailySalesError[row.week_start]}</div>
+                              ) : (
+                                <div className="space-y-4">
+                                  {groupDailyIntoWeeks(dailySalesByWeek[row.week_start] || [], row.week_start, row.week_end).map((bucket, bIdx) => (
+                                    <div key={bIdx}>
+                                      <div className={`text-xs font-semibold uppercase tracking-wider mb-2 ${bIdx === 2 ? 'text-gray-700' : 'text-gray-400'}`}>{bucket.label}</div>
+                                      <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-7 gap-3">
+                                        {bucket.rows.map((d: any) => (
+                                          <div key={d.day} className={`rounded-lg border p-3 ${bIdx === 2 ? 'bg-blue-50 border-blue-200' : 'bg-white border-gray-200'}`}>
+                                            <div className="text-xs text-gray-400 font-medium">{formatDayLabel(d.day)}</div>
+                                            <div className="text-sm font-bold text-green-700">{formatGBP(d.total_sales)}</div>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </td>
+                          </tr>
                         )}
-                        {showProfit && (
-                          <td className={`px-6 py-4 font-bold ${row.net_profit >= 0 ? 'text-green-700' : 'text-red-700'}`}>
-                            {formatGBP(row.net_profit)}
-                          </td>
-                        )}
-                      </tr>
+                      </Fragment>
                     ))}
                   </tbody>
                 </table>
@@ -1059,10 +1161,17 @@ export default function MobileFriendlyDashboard() {
                   <div className="p-8 text-center text-gray-400 bg-white rounded-xl border border-gray-200">No data in this date range.</div>
                 )}
                 {weeklyData.map((row, idx) => (
-                  <div key={idx} className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm space-y-3">
-                    <div className="border-b border-gray-100 pb-2">
-                      <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Week</span>
-                      <div className="text-base font-bold text-gray-900">{row.week_start} – {row.week_end}</div>
+                  <div
+                    key={idx}
+                    className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm space-y-3 cursor-pointer"
+                    onClick={() => toggleWeekExpanded(row.week_start, row.week_end)}
+                  >
+                    <div className="border-b border-gray-100 pb-2 flex items-center justify-between">
+                      <div>
+                        <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Week</span>
+                        <div className="text-base font-bold text-gray-900">{row.week_start} – {row.week_end}</div>
+                      </div>
+                      <span className={`text-gray-400 transition-transform ${expandedWeek === row.week_start ? 'rotate-90' : ''}`}>▶</span>
                     </div>
                     <div className="grid grid-cols-2 gap-3 text-sm">
                       {showSales && (
@@ -1092,6 +1201,29 @@ export default function MobileFriendlyDashboard() {
                         </div>
                       )}
                     </div>
+                    {expandedWeek === row.week_start && (
+                      <div className="pt-2 border-t border-dashed border-gray-100 space-y-3" onClick={(e) => e.stopPropagation()}>
+                        {dailySalesLoading[row.week_start] ? (
+                          <div className="text-sm text-gray-400 py-1">Loading daily sales…</div>
+                        ) : dailySalesError[row.week_start] ? (
+                          <div className="text-sm text-red-600 py-1">Couldn&apos;t load daily sales: {dailySalesError[row.week_start]}</div>
+                        ) : (
+                          groupDailyIntoWeeks(dailySalesByWeek[row.week_start] || [], row.week_start, row.week_end).map((bucket, bIdx) => (
+                            <div key={bIdx}>
+                              <div className={`text-xs font-semibold uppercase tracking-wider mb-1.5 ${bIdx === 2 ? 'text-gray-700' : 'text-gray-400'}`}>{bucket.label}</div>
+                              <div className="grid grid-cols-2 gap-2">
+                                {bucket.rows.map((d: any) => (
+                                  <div key={d.day} className={`rounded-lg border p-2 ${bIdx === 2 ? 'bg-blue-50 border-blue-200' : 'bg-gray-50 border-gray-200'}`}>
+                                    <div className="text-xs text-gray-400 font-medium">{formatDayLabel(d.day)}</div>
+                                    <div className="text-sm font-bold text-green-700">{formatGBP(d.total_sales)}</div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
