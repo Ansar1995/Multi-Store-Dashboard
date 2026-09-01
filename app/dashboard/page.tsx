@@ -268,6 +268,35 @@ function buildYearOptions(): YearOption[] {
   return opts;
 }
 
+// Individual Feb/May/Aug/Nov quarters, in the same shape as buildYearOptions
+// so both can live in one "Period" dropdown alongside Year End / Year to Date.
+function buildQuarterPeriodOptions(): YearOption[] {
+  const now = new Date();
+  const thisYear = now.getFullYear();
+  const today = todayStr();
+  const quarters = [
+    { month: 2, label: 'Q1', range: 'Feb-Apr' },
+    { month: 5, label: 'Q2', range: 'May-Jul' },
+    { month: 8, label: 'Q3', range: 'Aug-Oct' },
+    { month: 11, label: 'Q4', range: 'Nov-Jan' },
+  ];
+  const opts: YearOption[] = [];
+  for (let y = thisYear - 2; y <= thisYear + 1; y++) {
+    for (const q of quarters) {
+      const start = `${y}-${pad2(q.month)}-01`;
+      const end = quarterEndFromStart(start);
+      opts.push({
+        value: `q-${start}`,
+        label: `${q.label} ${y} (${q.range})`,
+        start,
+        end,
+        completed: end <= today,
+      });
+    }
+  }
+  return opts;
+}
+
 export default function MobileFriendlyDashboard() {
   const [tab, setTab] = useState<Tab>('overview');
 
@@ -289,20 +318,23 @@ export default function MobileFriendlyDashboard() {
   // Picking a quarter sets startDate/endDate to that quarter's bounds.
   const [dateMode, setDateMode] = useState<'range' | 'quarter'>('range');
   const yearOptions = useMemo(() => buildYearOptions(), []);
+  const quarterPeriodOptions = useMemo(() => buildQuarterPeriodOptions(), []);
+  const periodOptions = useMemo(() => [...yearOptions, ...quarterPeriodOptions], [yearOptions, quarterPeriodOptions]);
   const [reportQuarter, setReportQuarter] = useState<string>(() => yearOptions[0]?.value ?? '');
 
   // Whether the currently selected date range should have projected costs
   // (management fee / finance costs / misc, and cost-tree line items)
-  // folded in. Year End options carry their own "completed" flag (based on
-  // the true fiscal year end, not the possibly-today-capped end date); a
-  // manual date range is treated as still open if it reaches today or later.
+  // folded in. Year End and Quarter options each carry their own
+  // "completed" flag (based on their true end date, not a today-capped
+  // one); a manual date range is treated as still open if it reaches
+  // today or later.
   const includeProjected = useMemo(() => {
     if (dateMode === 'quarter') {
-      const opt = yearOptions.find(o => o.value === reportQuarter);
+      const opt = periodOptions.find(o => o.value === reportQuarter);
       if (opt) return !opt.completed;
     }
     return endDate >= todayStr();
-  }, [dateMode, reportQuarter, yearOptions, endDate]);
+  }, [dateMode, reportQuarter, periodOptions, endDate]);
 
   // Settings panel: lets you change which Start Date the dashboard opens
   // with by default. Starts blank; filled in from localStorage on mount.
@@ -430,11 +462,11 @@ export default function MobileFriendlyDashboard() {
     setLoading(false);
   }
 
-  // Sets startDate/endDate to the bounds of the chosen Year End / Year to
-  // Date option. Called whenever dateMode is 'quarter' and reportQuarter
-  // changes.
+  // Sets startDate/endDate to the bounds of the chosen period (a quarter,
+  // Year End, or Year to Date). Called whenever dateMode is 'quarter' and
+  // reportQuarter changes.
   function applyQuarterToRange(optionValue: string) {
-    const opt = yearOptions.find(o => o.value === optionValue);
+    const opt = periodOptions.find(o => o.value === optionValue);
     if (!opt) return;
     setReportQuarter(opt.value);
     setStartDate(opt.start);
@@ -844,7 +876,7 @@ export default function MobileFriendlyDashboard() {
           <div className="sm:col-span-2">
             <div className="flex items-center justify-between mb-1">
               <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500">
-                {dateMode === 'quarter' ? 'Year' : 'Date Range'}
+                {dateMode === 'quarter' ? 'Period' : 'Date Range'}
               </label>
               <div className="flex gap-1 bg-gray-100 rounded-md p-0.5">
                 <button
@@ -859,7 +891,7 @@ export default function MobileFriendlyDashboard() {
                   onClick={() => { setDateMode('quarter'); applyQuarterToRange(reportQuarter); }}
                   className={`text-xs font-medium px-2 py-0.5 rounded transition ${dateMode === 'quarter' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500'}`}
                 >
-                  Year
+                  Quarter / Year
                 </button>
               </div>
             </div>
@@ -896,13 +928,18 @@ export default function MobileFriendlyDashboard() {
                   onChange={(e) => applyQuarterToRange(e.target.value)}
                   className="w-full rounded-lg border-gray-300 p-2 text-sm border focus:ring-2 focus:ring-blue-500 focus:outline-none"
                 >
-                  {yearOptions.map(q => <option key={q.value} value={q.value}>{q.label}</option>)}
+                  <optgroup label="Year">
+                    {yearOptions.map(q => <option key={q.value} value={q.value}>{q.label}</option>)}
+                  </optgroup>
+                  <optgroup label="Quarter">
+                    {quarterPeriodOptions.map(q => <option key={q.value} value={q.value}>{q.label}</option>)}
+                  </optgroup>
                 </select>
                 <p className="text-xs text-gray-400 mt-1">
                   Runs {startDate} to {endDate}.{' '}
                   {includeProjected
-                    ? 'Year in progress -- projected management fee, finance costs and misc are included in Total Costs and the Cost Tree until actuals are invoiced.'
-                    : 'Year complete -- figures reflect actuals only.'}
+                    ? 'Still in progress -- projected management fee, finance costs and misc are included in Total Costs and the Cost Tree until actuals are invoiced.'
+                    : 'Complete -- figures reflect actuals only.'}
                 </p>
               </div>
             )}
