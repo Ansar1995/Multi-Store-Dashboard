@@ -208,6 +208,66 @@ function quarterEndFromStart(qStartStr: string): string {
   return d.toISOString().slice(0, 10);
 }
 
+function todayStr() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+// Fiscal years run Feb 1st -- Jan 31st (same anchor as the quarters above).
+function fiscalYearStartForYear(y: number) {
+  return `${y}-02-01`;
+}
+
+function fiscalYearEnd(fyStartStr: string): string {
+  const d = new Date(fyStartStr + 'T00:00:00');
+  d.setFullYear(d.getFullYear() + 1);
+  d.setDate(d.getDate() - 1);
+  return d.toISOString().slice(0, 10);
+}
+
+function currentFiscalYear(): number {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = now.getMonth() + 1;
+  return m === 1 ? y - 1 : y;
+}
+
+type YearOption = { value: string; label: string; start: string; end: string; completed: boolean };
+
+// Instead of picking individual Feb/May/Aug/Nov quarters, the report date
+// selector now collapses to two kinds of period per fiscal year: the
+// running "Year to Date" for the current year, and full "Year End" ranges
+// (including the current, still-open fiscal year, so you can see where a
+// year is projected to land). `completed` marks whether that period's true
+// end date has already passed -- used to decide whether projected costs
+// (management fee/finance/misc) should be folded into Total Costs.
+function buildYearOptions(): YearOption[] {
+  const curFy = currentFiscalYear();
+  const today = todayStr();
+  const opts: YearOption[] = [];
+
+  const ytdStart = fiscalYearStartForYear(curFy);
+  opts.push({
+    value: `ytd-${curFy}`,
+    label: `FY${curFy}/${String(curFy + 1).slice(2)} — Year to Date`,
+    start: ytdStart,
+    end: today,
+    completed: false,
+  });
+
+  for (let y = curFy; y >= curFy - 2; y--) {
+    const start = fiscalYearStartForYear(y);
+    const end = fiscalYearEnd(start);
+    opts.push({
+      value: `yearend-${y}`,
+      label: `FY${y}/${String(y + 1).slice(2)} — Year End`,
+      start,
+      end,
+      completed: end <= today,
+    });
+  }
+  return opts;
+}
+
 export default function MobileFriendlyDashboard() {
   const [tab, setTab] = useState<Tab>('overview');
 
@@ -228,7 +288,21 @@ export default function MobileFriendlyDashboard() {
   // be driven by a fiscal quarter picker instead of manual Start/End dates.
   // Picking a quarter sets startDate/endDate to that quarter's bounds.
   const [dateMode, setDateMode] = useState<'range' | 'quarter'>('range');
-  const [reportQuarter, setReportQuarter] = useState<string>(() => getCurrentQuarterStart());
+  const yearOptions = useMemo(() => buildYearOptions(), []);
+  const [reportQuarter, setReportQuarter] = useState<string>(() => yearOptions[0]?.value ?? '');
+
+  // Whether the currently selected date range should have projected costs
+  // (management fee / finance costs / misc, and cost-tree line items)
+  // folded in. Year End options carry their own "completed" flag (based on
+  // the true fiscal year end, not the possibly-today-capped end date); a
+  // manual date range is treated as still open if it reaches today or later.
+  const includeProjected = useMemo(() => {
+    if (dateMode === 'quarter') {
+      const opt = yearOptions.find(o => o.value === reportQuarter);
+      if (opt) return !opt.completed;
+    }
+    return endDate >= todayStr();
+  }, [dateMode, reportQuarter, yearOptions, endDate]);
 
   // Settings panel: lets you change which Start Date the dashboard opens
   // with by default. Starts blank; filled in from localStorage on mount.
@@ -312,7 +386,8 @@ export default function MobileFriendlyDashboard() {
       start_date: startDate,
       end_date: endDate,
       supplier_param: null,
-      branch_id_param: branchId === 'all' ? null : parseInt(branchId)
+      branch_id_param: branchId === 'all' ? null : parseInt(branchId),
+      include_projected_param: includeProjected
     });
     if (error) setTreeError(error.message);
     else if (data) setTreeData(data);
@@ -333,7 +408,8 @@ export default function MobileFriendlyDashboard() {
     const { data, error } = await supabase.rpc('get_sales_report', {
       start_date: startDate,
       end_date: endDate,
-      branch_id_param: branchId === 'all' ? null : parseInt(branchId)
+      branch_id_param: branchId === 'all' ? null : parseInt(branchId),
+      include_projected_param: includeProjected
     });
     if (error) setErrorMsg(error.message);
     else if (data) setReportData(data);
@@ -346,19 +422,23 @@ export default function MobileFriendlyDashboard() {
     const { data, error } = await supabase.rpc('get_sales_report_weekly', {
       start_date: startDate,
       end_date: endDate,
-      branch_id_param: branchId === 'all' ? null : parseInt(branchId)
+      branch_id_param: branchId === 'all' ? null : parseInt(branchId),
+      include_projected_param: includeProjected
     });
     if (error) setErrorMsg(error.message);
     else if (data) setWeeklyData(data);
     setLoading(false);
   }
 
-  // Sets startDate/endDate to the bounds of the chosen fiscal quarter.
-  // Called whenever dateMode is 'quarter' and reportQuarter changes.
-  function applyQuarterToRange(qStart: string) {
-    setReportQuarter(qStart);
-    setStartDate(qStart);
-    setEndDate(quarterEndFromStart(qStart));
+  // Sets startDate/endDate to the bounds of the chosen Year End / Year to
+  // Date option. Called whenever dateMode is 'quarter' and reportQuarter
+  // changes.
+  function applyQuarterToRange(optionValue: string) {
+    const opt = yearOptions.find(o => o.value === optionValue);
+    if (!opt) return;
+    setReportQuarter(opt.value);
+    setStartDate(opt.start);
+    setEndDate(opt.end);
   }
 
   async function fetchProjectionsReport() {
@@ -450,7 +530,7 @@ export default function MobileFriendlyDashboard() {
     if (tab !== 'overview') return;
     if (viewMode === 'weekly') fetchWeeklyReport();
     else fetchReport();
-  }, [tab, startDate, endDate, branchId, viewMode]);
+  }, [tab, startDate, endDate, branchId, viewMode, includeProjected]);
 
   useEffect(() => {
     if (tab === 'wages') fetchWagesDetail();
@@ -472,7 +552,7 @@ export default function MobileFriendlyDashboard() {
 
   useEffect(() => {
     if (tab === 'tree') fetchCostTree();
-  }, [tab, startDate, endDate, branchId]);
+  }, [tab, startDate, endDate, branchId, includeProjected]);
 
   function saveDefaultStartDate() {
     localStorage.setItem(DEFAULT_START_DATE_KEY, defaultStartDateDraft);
@@ -554,7 +634,7 @@ export default function MobileFriendlyDashboard() {
   const downloadProjectionsCSV = () => {
     const activeData = projectionsViewMode === 'weekly' ? projectionsWeeklyData : projectionsData;
     if (activeData.length === 0) return;
-    const headers = [projectionsViewMode === 'weekly' ? 'Week' : 'Store', 'Projected Turnover', 'Actual Sales', 'Sales Variance', 'Sales Variance %', 'Projected GP %', 'Actual GP %', 'GP Variance', 'Projected Waste %'];
+    const headers = [projectionsViewMode === 'weekly' ? 'Week' : 'Store', 'Projected Turnover', 'Actual Sales', 'Sales Variance', 'Sales Variance %', 'Projected GP %', 'Actual GP %', 'GP Variance', 'Projected Waste %', 'Projected Waste £', 'Actual Waste £', 'Actual Waste %', 'Waste Variance %'];
     const csvRows = [headers.join(',')];
     for (const row of activeData) {
       const label = projectionsViewMode === 'weekly' ? `${row.week_start} to ${row.week_end}` : row.branch_name;
@@ -562,6 +642,7 @@ export default function MobileFriendlyDashboard() {
         `"${String(label).replace(/"/g, '""')}"`,
         row.projected_turnover, row.actual_sales, row.sales_variance, row.sales_variance_pct,
         row.projected_gp_pct, row.actual_gp_pct, row.gp_variance_pct, row.projected_waste_pct,
+        row.projected_waste_value, row.actual_waste_value, row.actual_waste_pct, row.waste_variance_pct,
       ].join(','));
     }
     const blob = new Blob([csvRows.join('\n')], { type: 'text/csv;charset=utf-8;' });
@@ -574,6 +655,31 @@ export default function MobileFriendlyDashboard() {
     link.click();
     document.body.removeChild(link);
   };
+
+  // Aggregated projected vs actual waste across whatever's currently
+  // loaded in the Projections tab (total or weekly rows), for the summary
+  // card at the top of that tab.
+  const wasteSummary = useMemo(() => {
+    const rows = projectionsViewMode === 'weekly' ? projectionsWeeklyData : projectionsData;
+    const totals = rows.reduce(
+      (acc, r) => ({
+        projectedValue: acc.projectedValue + Number(r.projected_waste_value || 0),
+        actualValue: acc.actualValue + Number(r.actual_waste_value || 0),
+        sales: acc.sales + Number(r.actual_sales || 0),
+      }),
+      { projectedValue: 0, actualValue: 0, sales: 0 }
+    );
+    const actualPct = totals.sales > 0 ? (totals.actualValue / totals.sales) * 100 : null;
+    const projectedPct = totals.sales > 0 ? (totals.projectedValue / totals.sales) * 100 : null;
+    return { ...totals, actualPct, projectedPct };
+  }, [projectionsViewMode, projectionsWeeklyData, projectionsData]);
+
+  // Sum of projected management fee/finance/misc currently folded into
+  // Total Costs on the Overview tab (0 whenever includeProjected is false).
+  const projectedExtraTotal = useMemo(() => {
+    const rows = viewMode === 'weekly' ? weeklyData : reportData;
+    return rows.reduce((s, r) => s + Number(r.projected_extra_costs || 0), 0);
+  }, [viewMode, weeklyData, reportData]);
 
   const supplierTotals = useMemo(() => {
     return supplierData.reduce(
@@ -738,7 +844,7 @@ export default function MobileFriendlyDashboard() {
           <div className="sm:col-span-2">
             <div className="flex items-center justify-between mb-1">
               <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500">
-                {dateMode === 'quarter' ? 'Quarter' : 'Date Range'}
+                {dateMode === 'quarter' ? 'Year' : 'Date Range'}
               </label>
               <div className="flex gap-1 bg-gray-100 rounded-md p-0.5">
                 <button
@@ -753,7 +859,7 @@ export default function MobileFriendlyDashboard() {
                   onClick={() => { setDateMode('quarter'); applyQuarterToRange(reportQuarter); }}
                   className={`text-xs font-medium px-2 py-0.5 rounded transition ${dateMode === 'quarter' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500'}`}
                 >
-                  Quarter
+                  Year
                 </button>
               </div>
             </div>
@@ -777,16 +883,27 @@ export default function MobileFriendlyDashboard() {
                   className="flex-1 min-w-0 p-2 text-sm border-0 focus:ring-0 focus:outline-none bg-transparent"
                 />
               </div>
-            ) : (
+            ) : null}
+            {dateMode === 'range' && includeProjected && (
+              <p className="text-xs text-gray-400 mt-1">
+                Range reaches today -- projected management fee, finance costs and misc are included in Total Costs and the Cost Tree until actuals are invoiced.
+              </p>
+            )}
+            {dateMode === 'quarter' && (
               <div>
                 <select
                   value={reportQuarter}
                   onChange={(e) => applyQuarterToRange(e.target.value)}
                   className="w-full rounded-lg border-gray-300 p-2 text-sm border focus:ring-2 focus:ring-blue-500 focus:outline-none"
                 >
-                  {quarterOptions.map(q => <option key={q.value} value={q.value}>{q.label}</option>)}
+                  {yearOptions.map(q => <option key={q.value} value={q.value}>{q.label}</option>)}
                 </select>
-                <p className="text-xs text-gray-400 mt-1">Runs {startDate} to {endDate} -- weekly views for this range start counting from the quarter's 1st, so the final week may be partial.</p>
+                <p className="text-xs text-gray-400 mt-1">
+                  Runs {startDate} to {endDate}.{' '}
+                  {includeProjected
+                    ? 'Year in progress -- projected management fee, finance costs and misc are included in Total Costs and the Cost Tree until actuals are invoiced.'
+                    : 'Year complete -- figures reflect actuals only.'}
+                </p>
               </div>
             )}
           </div>
@@ -819,6 +936,11 @@ export default function MobileFriendlyDashboard() {
 
       {tab === 'overview' && (
         <>
+          {includeProjected && projectedExtraTotal > 0 && (
+            <div className="mb-4 p-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 text-sm">
+              🔮 Total Costs and Net Profit include <span className="font-semibold">{formatGBP(projectedExtraTotal)}</span> of projected management fee, finance costs and misc for the part of this period that hasn't been invoiced yet.
+            </div>
+          )}
           {/* 🔍 FLEXIBLE COLUMN CHANGER BAR + view/download actions */}
           <div className="flex flex-wrap gap-4 sm:gap-6 mb-6 bg-white p-4 rounded-xl border border-gray-200 shadow-sm items-center text-sm">
             <span className="font-semibold text-gray-500 text-xs uppercase tracking-wider">Metrics Shown:</span>
@@ -1048,6 +1170,38 @@ export default function MobileFriendlyDashboard() {
             </div>
           </div>
 
+          {/* 🗑️ PROJECTED VS ACTUAL WASTE SUMMARY */}
+          {!projectionsLoading && (wasteSummary.projectedValue > 0 || wasteSummary.actualValue > 0) && (
+            <div className="mb-4 bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
+              <div className="text-xs font-semibold uppercase tracking-wider text-gray-500 mb-3">
+                🗑️ Projected vs Actual Waste {branchId === 'all' ? '(All Branches Combined)' : ''}
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                <div>
+                  <div className="text-xs text-gray-400 font-medium">Projected Waste</div>
+                  <div className="text-lg font-bold text-gray-900">{formatGBP(wasteSummary.projectedValue)}</div>
+                  <div className="text-xs text-gray-500">{wasteSummary.projectedPct == null ? '—' : `${wasteSummary.projectedPct.toFixed(2)}% of sales`}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-gray-400 font-medium">Actual Waste</div>
+                  <div className="text-lg font-bold text-gray-900">{formatGBP(wasteSummary.actualValue)}</div>
+                  <div className="text-xs text-gray-500">{wasteSummary.actualPct == null ? '—' : `${wasteSummary.actualPct.toFixed(2)}% of sales`}</div>
+                </div>
+                <div className="col-span-2 sm:col-span-2">
+                  <div className="text-xs text-gray-400 font-medium">Variance</div>
+                  <div className={`text-lg font-bold ${wasteSummary.actualValue - wasteSummary.projectedValue <= 0 ? 'text-green-700' : 'text-red-700'}`}>
+                    {formatGBP(wasteSummary.actualValue - wasteSummary.projectedValue)}
+                  </div>
+                  <div className="text-xs text-gray-500">
+                    {wasteSummary.actualPct == null || wasteSummary.projectedPct == null
+                      ? '—'
+                      : `${(wasteSummary.actualPct - wasteSummary.projectedPct >= 0 ? '+' : '')}${(wasteSummary.actualPct - wasteSummary.projectedPct).toFixed(2)} pts vs target`}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           {projectionsError && (
             <div className="mb-4 p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm">
               Couldn&apos;t load projections: {projectionsError}
@@ -1072,15 +1226,18 @@ export default function MobileFriendlyDashboard() {
                       <th className="px-4 py-3.5 text-right font-semibold text-gray-600">Actual GP %</th>
                       <th className="px-4 py-3.5 text-right font-semibold text-gray-600">GP Variance</th>
                       <th className="px-4 py-3.5 text-right font-semibold text-gray-600">Projected Waste %</th>
+                      <th className="px-4 py-3.5 text-right font-semibold text-gray-600">Actual Waste %</th>
+                      <th className="px-4 py-3.5 text-right font-semibold text-gray-600">Waste Variance</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-200 bg-white">
                     {projectionsWeeklyData.length === 0 && (
-                      <tr><td className="px-4 py-8 text-center text-gray-400" colSpan={9}>No data in this date range.</td></tr>
+                      <tr><td className="px-4 py-8 text-center text-gray-400" colSpan={11}>No data in this date range.</td></tr>
                     )}
                     {projectionsWeeklyData.map((row, idx) => {
                       const salesOver = row.sales_variance >= 0;
                       const gpOver = row.gp_variance_pct == null ? null : row.gp_variance_pct >= 0;
+                      const wasteOver = row.waste_variance_pct == null ? null : row.waste_variance_pct > 0;
                       return (
                         <tr key={idx} className="hover:bg-gray-50 transition">
                           <td className="px-4 py-3 font-semibold text-gray-900 whitespace-nowrap">{row.week_start} – {row.week_end}</td>
@@ -1092,6 +1249,8 @@ export default function MobileFriendlyDashboard() {
                           <td className="px-4 py-3 text-right text-gray-700">{row.actual_gp_pct == null ? '—' : `${row.actual_gp_pct}%`}</td>
                           <td className={`px-4 py-3 text-right font-semibold ${gpOver == null ? 'text-gray-400' : gpOver ? 'text-green-700' : 'text-red-700'}`}>{row.gp_variance_pct == null ? '—' : `${row.gp_variance_pct}%`}</td>
                           <td className="px-4 py-3 text-right text-gray-700">{row.projected_waste_pct == null ? '—' : `${row.projected_waste_pct}%`}</td>
+                          <td className="px-4 py-3 text-right text-gray-700">{row.actual_waste_pct == null ? '—' : `${row.actual_waste_pct}%`}</td>
+                          <td className={`px-4 py-3 text-right font-semibold ${wasteOver == null ? 'text-gray-400' : wasteOver ? 'text-red-700' : 'text-green-700'}`}>{row.waste_variance_pct == null ? '—' : `${row.waste_variance_pct > 0 ? '+' : ''}${row.waste_variance_pct}%`}</td>
                         </tr>
                       );
                     })}
@@ -1107,6 +1266,7 @@ export default function MobileFriendlyDashboard() {
                 {projectionsWeeklyData.map((row, idx) => {
                   const salesOver = row.sales_variance >= 0;
                   const gpOver = row.gp_variance_pct == null ? null : row.gp_variance_pct >= 0;
+                  const wasteOver = row.waste_variance_pct == null ? null : row.waste_variance_pct > 0;
                   return (
                     <div key={idx} className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm space-y-3">
                       <div className="border-b border-gray-100 pb-2">
@@ -1116,12 +1276,16 @@ export default function MobileFriendlyDashboard() {
                         <div><div className="text-xs text-gray-400 font-medium">Projected Turnover</div><div className="font-semibold">{formatGBP(row.projected_turnover)}</div></div>
                         <div><div className="text-xs text-gray-400 font-medium">Actual Sales</div><div className="font-semibold">{formatGBP(row.actual_sales)}</div></div>
                         <div><div className="text-xs text-gray-400 font-medium">Variance</div><div className={`font-bold ${salesOver ? 'text-green-700' : 'text-red-700'}`}>{formatGBP(row.sales_variance)} ({row.sales_variance_pct == null ? '—' : `${row.sales_variance_pct}%`})</div></div>
-                        <div><div className="text-xs text-gray-400 font-medium">Projected Waste %</div><div className="font-semibold">{row.projected_waste_pct == null ? '—' : `${row.projected_waste_pct}%`}</div></div>
                       </div>
                       <div className="pt-2 border-t border-dashed border-gray-100 grid grid-cols-3 gap-3 text-sm">
                         <div><div className="text-xs text-gray-400 font-medium">Projected GP %</div><div className="font-semibold">{row.projected_gp_pct == null ? '—' : `${row.projected_gp_pct}%`}</div></div>
                         <div><div className="text-xs text-gray-400 font-medium">Actual GP %</div><div className="font-semibold">{row.actual_gp_pct == null ? '—' : `${row.actual_gp_pct}%`}</div></div>
                         <div><div className="text-xs text-gray-400 font-medium">GP Variance</div><div className={`font-bold ${gpOver == null ? 'text-gray-400' : gpOver ? 'text-green-700' : 'text-red-700'}`}>{row.gp_variance_pct == null ? '—' : `${row.gp_variance_pct}%`}</div></div>
+                      </div>
+                      <div className="pt-2 border-t border-dashed border-gray-100 grid grid-cols-3 gap-3 text-sm">
+                        <div><div className="text-xs text-gray-400 font-medium">Projected Waste %</div><div className="font-semibold">{row.projected_waste_pct == null ? '—' : `${row.projected_waste_pct}%`}</div></div>
+                        <div><div className="text-xs text-gray-400 font-medium">Actual Waste %</div><div className="font-semibold">{row.actual_waste_pct == null ? '—' : `${row.actual_waste_pct}%`}</div></div>
+                        <div><div className="text-xs text-gray-400 font-medium">Waste Variance</div><div className={`font-bold ${wasteOver == null ? 'text-gray-400' : wasteOver ? 'text-red-700' : 'text-green-700'}`}>{row.waste_variance_pct == null ? '—' : `${row.waste_variance_pct > 0 ? '+' : ''}${row.waste_variance_pct}%`}</div></div>
                       </div>
                     </div>
                   );
@@ -1144,15 +1308,18 @@ export default function MobileFriendlyDashboard() {
                       <th className="px-4 py-3.5 text-right font-semibold text-gray-600">Actual GP %</th>
                       <th className="px-4 py-3.5 text-right font-semibold text-gray-600">GP Variance</th>
                       <th className="px-4 py-3.5 text-right font-semibold text-gray-600">Projected Waste %</th>
+                      <th className="px-4 py-3.5 text-right font-semibold text-gray-600">Actual Waste %</th>
+                      <th className="px-4 py-3.5 text-right font-semibold text-gray-600">Waste Variance</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-200 bg-white">
                     {projectionsData.length === 0 && (
-                      <tr><td className="px-4 py-8 text-center text-gray-400" colSpan={9}>No projections uploaded for this date range.</td></tr>
+                      <tr><td className="px-4 py-8 text-center text-gray-400" colSpan={11}>No projections uploaded for this date range.</td></tr>
                     )}
                     {projectionsData.map((row, idx) => {
                       const salesOver = row.sales_variance >= 0;
                       const gpOver = row.gp_variance_pct == null ? null : row.gp_variance_pct >= 0;
+                      const wasteOver = row.waste_variance_pct == null ? null : row.waste_variance_pct > 0;
                       return (
                         <tr key={idx} className="hover:bg-gray-50 transition">
                           <td className="px-4 py-3 font-semibold text-gray-900 whitespace-nowrap">{row.branch_name}</td>
@@ -1164,6 +1331,8 @@ export default function MobileFriendlyDashboard() {
                           <td className="px-4 py-3 text-right text-gray-700">{row.actual_gp_pct == null ? '—' : `${row.actual_gp_pct}%`}</td>
                           <td className={`px-4 py-3 text-right font-semibold ${gpOver == null ? 'text-gray-400' : gpOver ? 'text-green-700' : 'text-red-700'}`}>{row.gp_variance_pct == null ? '—' : `${row.gp_variance_pct}%`}</td>
                           <td className="px-4 py-3 text-right text-gray-700">{row.projected_waste_pct == null ? '—' : `${row.projected_waste_pct}%`}</td>
+                          <td className="px-4 py-3 text-right text-gray-700">{row.actual_waste_pct == null ? '—' : `${row.actual_waste_pct}%`}</td>
+                          <td className={`px-4 py-3 text-right font-semibold ${wasteOver == null ? 'text-gray-400' : wasteOver ? 'text-red-700' : 'text-green-700'}`}>{row.waste_variance_pct == null ? '—' : `${row.waste_variance_pct > 0 ? '+' : ''}${row.waste_variance_pct}%`}</td>
                         </tr>
                       );
                     })}
@@ -1179,6 +1348,7 @@ export default function MobileFriendlyDashboard() {
                 {projectionsData.map((row, idx) => {
                   const salesOver = row.sales_variance >= 0;
                   const gpOver = row.gp_variance_pct == null ? null : row.gp_variance_pct >= 0;
+                  const wasteOver = row.waste_variance_pct == null ? null : row.waste_variance_pct > 0;
                   return (
                     <div key={idx} className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm space-y-3">
                       <div className="border-b border-gray-100 pb-2">
@@ -1187,13 +1357,17 @@ export default function MobileFriendlyDashboard() {
                       <div className="grid grid-cols-2 gap-3 text-sm">
                         <div><div className="text-xs text-gray-400 font-medium">Projected Turnover</div><div className="font-semibold">{formatGBP(row.projected_turnover)}</div></div>
                         <div><div className="text-xs text-gray-400 font-medium">Actual Sales</div><div className="font-semibold">{formatGBP(row.actual_sales)}</div></div>
-                        <div><div className="text-xs text-gray-400 font-medium">Variance</div><div className={`font-bold ${salesOver ? 'text-green-700' : 'text-red-700'}`}>{formatGBP(row.sales_variance)} ({row.sales_variance_pct == null ? '—' : `${row.sales_variance_pct}%`})</div></div>
-                        <div><div className="text-xs text-gray-400 font-medium">Projected Waste %</div><div className="font-semibold">{row.projected_waste_pct == null ? '—' : `${row.projected_waste_pct}%`}</div></div>
+                        <div className="col-span-2"><div className="text-xs text-gray-400 font-medium">Variance</div><div className={`font-bold ${salesOver ? 'text-green-700' : 'text-red-700'}`}>{formatGBP(row.sales_variance)} ({row.sales_variance_pct == null ? '—' : `${row.sales_variance_pct}%`})</div></div>
                       </div>
                       <div className="pt-2 border-t border-dashed border-gray-100 grid grid-cols-3 gap-3 text-sm">
                         <div><div className="text-xs text-gray-400 font-medium">Projected GP %</div><div className="font-semibold">{row.projected_gp_pct == null ? '—' : `${row.projected_gp_pct}%`}</div></div>
                         <div><div className="text-xs text-gray-400 font-medium">Actual GP %</div><div className="font-semibold">{row.actual_gp_pct == null ? '—' : `${row.actual_gp_pct}%`}</div></div>
                         <div><div className="text-xs text-gray-400 font-medium">GP Variance</div><div className={`font-bold ${gpOver == null ? 'text-gray-400' : gpOver ? 'text-green-700' : 'text-red-700'}`}>{row.gp_variance_pct == null ? '—' : `${row.gp_variance_pct}%`}</div></div>
+                      </div>
+                      <div className="pt-2 border-t border-dashed border-gray-100 grid grid-cols-3 gap-3 text-sm">
+                        <div><div className="text-xs text-gray-400 font-medium">Projected Waste %</div><div className="font-semibold">{row.projected_waste_pct == null ? '—' : `${row.projected_waste_pct}%`}</div></div>
+                        <div><div className="text-xs text-gray-400 font-medium">Actual Waste %</div><div className="font-semibold">{row.actual_waste_pct == null ? '—' : `${row.actual_waste_pct}%`}</div></div>
+                        <div><div className="text-xs text-gray-400 font-medium">Waste Variance</div><div className={`font-bold ${wasteOver == null ? 'text-gray-400' : wasteOver ? 'text-red-700' : 'text-green-700'}`}>{row.waste_variance_pct == null ? '—' : `${row.waste_variance_pct > 0 ? '+' : ''}${row.waste_variance_pct}%`}</div></div>
                       </div>
                     </div>
                   );
@@ -1536,6 +1710,11 @@ export default function MobileFriendlyDashboard() {
 
       {tab === 'tree' && (
         <>
+          {includeProjected && (
+            <div className="mb-4 p-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 text-sm">
+              🔮 This period is still in progress -- a "Projected Costs" account is included below with the still-to-be-invoiced management fee, finance costs and misc.
+            </div>
+          )}
           <div className="flex flex-wrap justify-between items-center gap-2 mb-4">
             <div className="text-sm text-gray-500">
               Total for range: <span className="font-bold text-gray-900">{formatGBP(costTreeGrandTotal)}</span>
