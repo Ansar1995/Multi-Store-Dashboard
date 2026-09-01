@@ -200,16 +200,24 @@ function getCurrentQuarterStart() {
 
 // Given a fiscal quarter start (Feb/May/Aug/Nov 1st), returns that quarter's
 // end date -- mirrors the Postgres quarter_end_for() helper so the frontend
-// and database always agree on where a quarter ends.
+// and database always agree on where a quarter ends. Arithmetic is done in
+// UTC (not local time) so it's immune to the browser's timezone -- doing it
+// in local time and then calling toISOString() would silently shift the
+// date backward by a day during BST (local midnight = 23:00 UTC the day
+// before).
 function quarterEndFromStart(qStartStr: string): string {
-  const d = new Date(qStartStr + 'T00:00:00');
-  d.setMonth(d.getMonth() + 3);
-  d.setDate(d.getDate() - 1);
+  const d = new Date(qStartStr + 'T00:00:00Z');
+  d.setUTCMonth(d.getUTCMonth() + 3);
+  d.setUTCDate(d.getUTCDate() - 1);
   return d.toISOString().slice(0, 10);
 }
 
+// Today's date as YYYY-MM-DD, using the browser's LOCAL calendar date (not
+// UTC) -- so it reads "today" correctly no matter the time of day or
+// timezone offset.
 function todayStr() {
-  return new Date().toISOString().slice(0, 10);
+  const d = new Date();
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 }
 
 // Fiscal years run Feb 1st -- Jan 31st (same anchor as the quarters above).
@@ -218,9 +226,9 @@ function fiscalYearStartForYear(y: number) {
 }
 
 function fiscalYearEnd(fyStartStr: string): string {
-  const d = new Date(fyStartStr + 'T00:00:00');
-  d.setFullYear(d.getFullYear() + 1);
-  d.setDate(d.getDate() - 1);
+  const d = new Date(fyStartStr + 'T00:00:00Z');
+  d.setUTCFullYear(d.getUTCFullYear() + 1);
+  d.setUTCDate(d.getUTCDate() - 1);
   return d.toISOString().slice(0, 10);
 }
 
@@ -664,10 +672,13 @@ export default function MobileFriendlyDashboard() {
   const formatDayLabel = (isoDate: string) =>
     new Date(isoDate + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
 
-  // Shifts an ISO date string by N days (negative = earlier).
+  // Shifts an ISO date string by N days (negative = earlier). Done in UTC
+  // so it's immune to the browser's local timezone -- this must land on
+  // exactly the same day the server's week boundaries use, or the "week
+  // starts Saturday" grouping drifts by a day during BST.
   const shiftDate = (isoDate: string, days: number) => {
-    const d = new Date(isoDate + 'T00:00:00');
-    d.setDate(d.getDate() + days);
+    const d = new Date(isoDate + 'T00:00:00Z');
+    d.setUTCDate(d.getUTCDate() + days);
     return d.toISOString().slice(0, 10);
   };
 
