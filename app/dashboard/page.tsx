@@ -1040,8 +1040,8 @@ export default function MobileFriendlyDashboard() {
       {tab === 'overview' && (
         <>
           {includeProjected && projectedExtraTotal > 0 && (
-            <div className="mb-4 p-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 text-sm">
-              🔮 <span className="font-semibold">Projected costs included</span> — {formatGBP(projectedExtraTotal)} of management fee, finance costs and misc for the part of this period that hasn't been invoiced yet.
+            <div className="mb-4 p-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 text-sm font-semibold">
+              🔮 Projected Costs included
             </div>
           )}
           {/* 🔍 FLEXIBLE COLUMN CHANGER BAR + view/download actions */}
