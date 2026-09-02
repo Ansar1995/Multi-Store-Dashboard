@@ -805,6 +805,25 @@ export default function MobileFriendlyDashboard() {
     );
   }, [supplierData]);
 
+  // Sums every currently-displayed Wages & Hours row -- e.g. when "All
+  // Branches" is selected, this is the grand total across every store for
+  // the visible months (each row is one store's one month).
+  const wagesTotals = useMemo(() => {
+    return wagesData.reduce(
+      (acc, r) => ({
+        dayHours: acc.dayHours + Number(r.day_hours || 0),
+        nightHours: acc.nightHours + Number(r.night_hours || 0),
+        holHours: acc.holHours + Number(r.hol_hours || 0),
+        totalHours: acc.totalHours + Number(r.total_hours || 0),
+        wagesCost: acc.wagesCost + Number(r.wages_cost || 0),
+        niCost: acc.niCost + Number(r.ni_cost || 0),
+        pensionCost: acc.pensionCost + Number(r.pension_cost || 0),
+        totalWageCost: acc.totalWageCost + Number(r.total_wage_cost || 0),
+      }),
+      { dayHours: 0, nightHours: 0, holHours: 0, totalHours: 0, wagesCost: 0, niCost: 0, pensionCost: 0, totalWageCost: 0 }
+    );
+  }, [wagesData]);
+
   // Breakdown of the current supplier/date filter across every branch it
   // touched -- lets you see one supplier's spend by branch at a glance,
   // regardless of whether the top Store Filter is set to "All" or one store.
@@ -1624,13 +1643,43 @@ export default function MobileFriendlyDashboard() {
                       </tr>
                     ))}
                   </tbody>
+                  {wagesData.length > 0 && (
+                    <tfoot>
+                      <tr className="bg-gray-50 border-t-2 border-gray-200 font-bold">
+                        <td className="px-4 py-3 text-gray-900" colSpan={2}>Total{branchId === 'all' ? ' (All Branches)' : ''}</td>
+                        <td className="px-4 py-3 text-right text-gray-900">{formatHours(wagesTotals.dayHours)}</td>
+                        <td className="px-4 py-3 text-right text-gray-900">{formatHours(wagesTotals.nightHours)}</td>
+                        <td className="px-4 py-3 text-right text-gray-900">{formatHours(wagesTotals.holHours)}</td>
+                        <td className="px-4 py-3 text-right text-gray-900">{formatHours(wagesTotals.totalHours)}</td>
+                        <td className="px-4 py-3 text-right text-red-700">{formatGBP(wagesTotals.wagesCost)}</td>
+                        <td className="px-4 py-3 text-right text-red-700">{formatGBP(wagesTotals.niCost)}</td>
+                        <td className="px-4 py-3 text-right text-red-700">{formatGBP(wagesTotals.pensionCost)}</td>
+                        <td className="px-4 py-3 text-right text-red-800">{formatGBP(wagesTotals.totalWageCost)}</td>
+                      </tr>
+                    </tfoot>
+                  )}
                 </table>
               </div>
-
               {/* MOBILE: wages detail cards */}
               <div className="block md:hidden space-y-4">
                 {wagesData.length === 0 && (
                   <div className="p-8 text-center text-gray-400 bg-white rounded-xl border border-gray-200">No wages data in this date range.</div>
+                )}
+                {wagesData.length > 0 && (
+                  <div className="bg-gray-900 text-white p-4 rounded-xl shadow-sm space-y-3">
+                    <div className="text-xs font-semibold uppercase tracking-wider text-gray-300">
+                      Total{branchId === 'all' ? ' (All Branches)' : ''}
+                    </div>
+                    <div className="grid grid-cols-3 gap-3 text-sm">
+                      <div><div className="text-xs text-gray-400 font-medium">Day Hrs</div><div className="font-semibold">{formatHours(wagesTotals.dayHours)}</div></div>
+                      <div><div className="text-xs text-gray-400 font-medium">Night Hrs</div><div className="font-semibold">{formatHours(wagesTotals.nightHours)}</div></div>
+                      <div><div className="text-xs text-gray-400 font-medium">Hol Hrs</div><div className="font-semibold">{formatHours(wagesTotals.holHours)}</div></div>
+                    </div>
+                    <div className="pt-2 border-t border-dashed border-gray-700 grid grid-cols-2 gap-3 text-sm">
+                      <div><div className="text-xs text-gray-400 font-medium">Total Hrs</div><div className="font-bold">{formatHours(wagesTotals.totalHours)}</div></div>
+                      <div><div className="text-xs text-gray-400 font-medium">Total Wage Cost</div><div className="font-bold">{formatGBP(wagesTotals.totalWageCost)}</div></div>
+                    </div>
+                  </div>
                 )}
                 {wagesData.map((row, idx) => (
                   <div key={idx} className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm space-y-3">
