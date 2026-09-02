@@ -360,7 +360,9 @@ export default function MobileFriendlyDashboard() {
   const [showGrossProfit, setShowGrossProfit] = useState(true);
   const [showProfit, setShowProfit] = useState(true);
 
-  // --- Wages detail (filter by week / store / hours worked) ---------------
+  // --- Wages detail (filter by month / store / hours worked) -- wages are
+  // paid monthly (one entry per store per calendar month, dated at
+  // month-end), so this is grouped by month, not fiscal week -----------
   const [wagesData, setWagesData] = useState<any[]>([]);
   const [wagesLoading, setWagesLoading] = useState(false);
   const [wagesError, setWagesError] = useState<string | null>(null);
@@ -565,7 +567,7 @@ export default function MobileFriendlyDashboard() {
   async function fetchWagesDetail() {
     setWagesLoading(true);
     setWagesError(null);
-    const { data, error } = await supabase.rpc('get_wages_detail', {
+    const { data, error } = await supabase.rpc('get_wages_detail_monthly', {
       start_date: startDate,
       end_date: endDate,
       branch_id_param: branchId === 'all' ? null : parseInt(branchId)
@@ -717,13 +719,19 @@ export default function MobileFriendlyDashboard() {
     document.body.removeChild(link);
   };
 
+  // Format an ISO date (the 1st of a month) as "August 2026" for the Wages
+  // & Hours tab, which is grouped by calendar month (wages are paid
+  // monthly).
+  const formatMonthLabel = (isoDate: string) =>
+    new Date(isoDate + 'T00:00:00').toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
+
   const downloadWagesCSV = () => {
     if (wagesData.length === 0) return;
-    const headers = ['Week', 'Store', 'Day Hours', 'Night Hours', 'Hol Hours', 'Total Hours', 'Wages Cost', 'NI Cost', 'Pension Cost', 'Total Wage Cost'];
+    const headers = ['Month', 'Store', 'Day Hours', 'Night Hours', 'Hol Hours', 'Total Hours', 'Wages Cost', 'NI Cost', 'Pension Cost', 'Total Wage Cost'];
     const csvRows = [headers.join(',')];
     for (const row of wagesData) {
       csvRows.push([
-        `"${row.week_start} to ${row.week_end}"`,
+        `"${formatMonthLabel(row.month_start)}"`,
         `"${String(row.branch_name).replace(/"/g, '""')}"`,
         row.day_hours, row.night_hours, row.hol_hours, row.total_hours,
         row.wages_cost, row.ni_cost, row.pension_cost, row.total_wage_cost,
@@ -1585,7 +1593,7 @@ export default function MobileFriendlyDashboard() {
                 <table className="min-w-full divide-y divide-gray-200 text-sm">
                   <thead className="bg-gray-50">
                     <tr>
-                      <th className="px-4 py-3.5 text-left font-semibold text-gray-600">Week</th>
+                      <th className="px-4 py-3.5 text-left font-semibold text-gray-600">Month</th>
                       <th className="px-4 py-3.5 text-left font-semibold text-gray-600">Store</th>
                       <th className="px-4 py-3.5 text-right font-semibold text-gray-600">Day Hrs</th>
                       <th className="px-4 py-3.5 text-right font-semibold text-gray-600">Night Hrs</th>
@@ -1603,7 +1611,7 @@ export default function MobileFriendlyDashboard() {
                     )}
                     {wagesData.map((row, idx) => (
                       <tr key={idx} className="hover:bg-gray-50 transition">
-                        <td className="px-4 py-3 font-medium text-gray-900 whitespace-nowrap">{row.week_start} – {row.week_end}</td>
+                        <td className="px-4 py-3 font-medium text-gray-900 whitespace-nowrap">{formatMonthLabel(row.month_start)}</td>
                         <td className="px-4 py-3 text-gray-700 whitespace-nowrap">{row.branch_name}</td>
                         <td className="px-4 py-3 text-right text-gray-700">{formatHours(row.day_hours)}</td>
                         <td className="px-4 py-3 text-right text-gray-700">{formatHours(row.night_hours)}</td>
@@ -1627,7 +1635,7 @@ export default function MobileFriendlyDashboard() {
                 {wagesData.map((row, idx) => (
                   <div key={idx} className="bg-white p-4 rounded-xl border border-gray-200 shadow-sm space-y-3">
                     <div className="border-b border-gray-100 pb-2">
-                      <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">{row.week_start} – {row.week_end}</span>
+                      <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">{formatMonthLabel(row.month_start)}</span>
                       <div className="text-base font-bold text-gray-900">{row.branch_name}</div>
                     </div>
                     <div className="grid grid-cols-3 gap-3 text-sm">
