@@ -1,13 +1,7 @@
 'use client';
 
 import { useState, useEffect, useMemo, Fragment } from 'react';
-import { createClient } from '@supabase/supabase-js';
-
-// This pulls your keys safely from your .env.local file
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
-
-const supabase = createClient(supabaseUrl, supabaseAnonKey);
+import { useAuth, supabase } from '../../lib/useAuth';
 
 // The Start Date the dashboard opens with is saved here in the browser, so
 // it survives reloads (but is local to this browser -- not synced to
@@ -313,6 +307,9 @@ function buildQuarterPeriodOptions(): YearOption[] {
 }
 
 export default function MobileFriendlyDashboard() {
+  // Redirects to /login automatically if there's no active session.
+  const auth = useAuth();
+
   const [tab, setTab] = useState<Tab>('overview');
 
   const [startDate, setStartDate] = useState(FALLBACK_START_DATE);
@@ -911,11 +908,34 @@ export default function MobileFriendlyDashboard() {
     document.body.removeChild(link);
   };
 
+  // While the session is being checked, show nothing but a simple loading
+  // state -- avoids a flash of dashboard content before a signed-out
+  // visitor gets redirected to /login (useAuth() handles that redirect).
+  if (auth.loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-b from-slate-100 to-gray-100">
+        <p className="text-sm text-gray-500">Loading…</p>
+      </div>
+    );
+  }
+  if (!auth.userId) {
+    return null;
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-100 to-gray-100 text-gray-800">
       <div className="sticky top-0 z-10 bg-gradient-to-b from-slate-100/95 to-slate-100/80 backdrop-blur-sm pt-4 sm:pt-6 pb-2">
         <div className="px-4 sm:px-6 max-w-6xl mx-auto">
           {/* HEADER SECTION */}
+          <div className="flex items-center justify-end gap-3 mb-1 text-xs text-gray-500">
+            <span>{auth.email}</span>
+            <button
+              onClick={auth.signOut}
+              className="underline hover:text-gray-700"
+            >
+              Sign out
+            </button>
+          </div>
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-4">
             <div className="flex items-center gap-3">
               <div className="flex items-center justify-center h-11 w-11 rounded-xl bg-blue-600 text-white text-xl shadow-sm shrink-0">📊</div>
