@@ -15,6 +15,13 @@ const supabase = createClient(supabaseUrl, supabaseAnonKey);
 const DEFAULT_START_DATE_KEY = 'msd_default_start_date';
 const FALLBACK_START_DATE = '2026-01-01';
 
+// Whether Refit Budget (Stores.refit_budget, a fixed per-week amount per
+// store) is folded into Total Costs / Net Profit on Overview. Defaults to
+// included -- this key is only ever written when the person explicitly
+// switches it off in Settings, so its mere ABSENCE means "on" (the
+// default), not "unset".
+const INCLUDE_REFIT_BUDGET_KEY = 'msd_include_refit_budget';
+
 type Tab = 'overview' | 'wages' | 'budget' | 'suppliers' | 'tree' | 'projections';
 
 type CostTreeNode = {
@@ -354,6 +361,12 @@ export default function MobileFriendlyDashboard() {
   const [savedDefaultStartDate, setSavedDefaultStartDate] = useState<string | null>(null);
   const [defaultStartDateDraft, setDefaultStartDateDraft] = useState(FALLBACK_START_DATE);
 
+  // Refit Budget toggle: defaults to ON (included in Net Profit/Total
+  // Costs) unless the person has explicitly switched it off before -- see
+  // INCLUDE_REFIT_BUDGET_KEY above. Only folded into Overview/Weekly; never
+  // shown in the Cost Tree or Suppliers tabs.
+  const [includeRefitBudget, setIncludeRefitBudget] = useState(true);
+
   // Column View Toggles
   const [showSales, setShowSales] = useState(true);
   const [showCosts, setShowCosts] = useState(true);
@@ -455,7 +468,8 @@ export default function MobileFriendlyDashboard() {
       start_date: startDate,
       end_date: endDate,
       branch_id_param: branchId === 'all' ? null : parseInt(branchId),
-      include_projected_param: includeProjected
+      include_projected_param: includeProjected,
+      include_refit_budget_param: includeRefitBudget
     });
     if (error) setErrorMsg(error.message);
     else if (data) setReportData(data);
@@ -472,7 +486,8 @@ export default function MobileFriendlyDashboard() {
       start_date: startDate,
       end_date: endDate,
       branch_id_param: branchId === 'all' ? null : parseInt(branchId),
-      include_projected_param: includeProjected
+      include_projected_param: includeProjected,
+      include_refit_budget_param: includeRefitBudget
     });
     if (error) setErrorMsg(error.message);
     else if (data) setWeeklyData(data);
@@ -623,11 +638,24 @@ export default function MobileFriendlyDashboard() {
     }
   }, []);
 
+  // Refit Budget defaults to ON. Only an explicit "false" previously saved
+  // turns it off -- any other stored value (or none at all) leaves it on.
+  useEffect(() => {
+    const saved = typeof window !== 'undefined' ? localStorage.getItem(INCLUDE_REFIT_BUDGET_KEY) : null;
+    if (saved === 'false') setIncludeRefitBudget(false);
+  }, []);
+
+  function toggleIncludeRefitBudget() {
+    const next = !includeRefitBudget;
+    setIncludeRefitBudget(next);
+    localStorage.setItem(INCLUDE_REFIT_BUDGET_KEY, String(next));
+  }
+
   useEffect(() => {
     if (tab !== 'overview') return;
     if (viewMode === 'weekly') fetchWeeklyReport();
     else fetchReport();
-  }, [tab, startDate, endDate, branchId, viewMode, includeProjected]);
+  }, [tab, startDate, endDate, branchId, viewMode, includeProjected, includeRefitBudget]);
 
   useEffect(() => {
     if (tab === 'wages') fetchWagesDetail();
@@ -964,6 +992,31 @@ export default function MobileFriendlyDashboard() {
               </button>
             )}
           </div>
+
+          <div className="mt-4 pt-4 border-t border-gray-100">
+            <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500 mb-1">
+              Refit Budget
+            </label>
+            <p className="text-xs text-gray-500 mb-2">
+              Each store's weekly Refit Budget (set per store in Stores) is included in Total Costs and Net Profit
+              on Overview by default. It never appears in the Cost Tree or Suppliers tabs. Turn this off if you want
+              Overview figures to exclude it.
+            </p>
+            <label className="flex items-center gap-2 cursor-pointer w-fit">
+              <button
+                type="button"
+                role="switch"
+                aria-checked={includeRefitBudget}
+                onClick={toggleIncludeRefitBudget}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition ${includeRefitBudget ? 'bg-blue-600' : 'bg-gray-300'}`}
+              >
+                <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition ${includeRefitBudget ? 'translate-x-6' : 'translate-x-1'}`} />
+              </button>
+              <span className="text-sm font-medium text-gray-700">
+                {includeRefitBudget ? 'Included in Net Profit' : 'Excluded from Net Profit'}
+              </span>
+            </label>
+          </div>
         </div>
       )}
 
@@ -1080,6 +1133,11 @@ export default function MobileFriendlyDashboard() {
           {includeProjected && projectedExtraTotal > 0 && (
             <div className="mb-4 p-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 text-sm font-semibold">
               🔮 Projected Costs included
+            </div>
+          )}
+          {!includeRefitBudget && (
+            <div className="mb-4 p-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 text-sm font-semibold">
+              🛠️ Refit Budget excluded (switched off in Settings)
             </div>
           )}
           {/* 🔍 FLEXIBLE COLUMN CHANGER BAR + view/download actions */}
