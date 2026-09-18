@@ -1,5 +1,3 @@
-'use client';
-
 import { useEffect, useState } from 'react';
 import { createClient } from '@supabase/supabase-js';
 import { useRouter } from 'next/navigation';
@@ -23,6 +21,7 @@ export interface AuthState {
   canEditBudgets: boolean; // master or admin only (per current rules)
   canSeeNetProfit: boolean; // master or admin only (per current rules)
   canSeeRefitToggle: boolean; // master only (per current rules)
+  canSeeOtherIncomeToggle: boolean; // master or admin only (per current rules)
   signOut: () => Promise<void>;
 }
 
@@ -121,6 +120,7 @@ export function useAuth(redirectToLoginIfSignedOut = true): AuthState {
     canEditBudgets: isFullAccess,
     canSeeNetProfit: isFullAccess,
     canSeeRefitToggle: role === 'master',
+    canSeeOtherIncomeToggle: isFullAccess,
     signOut,
   };
 }
