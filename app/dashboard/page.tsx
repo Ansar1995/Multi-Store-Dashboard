@@ -1,7 +1,13 @@
 'use client';
 
 import { useState, useEffect, useMemo, Fragment } from 'react';
-import { useAuth, supabase } from '../../lib/useAuth';
+import { createClient } from '@supabase/supabase-js';
+
+// This pulls your keys safely from your .env.local file
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+
+const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
 // The Start Date the dashboard opens with is saved here in the browser, so
 // it survives reloads (but is local to this browser -- not synced to
@@ -307,9 +313,6 @@ function buildQuarterPeriodOptions(): YearOption[] {
 }
 
 export default function MobileFriendlyDashboard() {
-  // Redirects to /login automatically if there's no active session.
-  const auth = useAuth();
-
   const [tab, setTab] = useState<Tab>('overview');
 
   const [startDate, setStartDate] = useState(FALLBACK_START_DATE);
@@ -369,16 +372,10 @@ export default function MobileFriendlyDashboard() {
   const [showCosts, setShowCosts] = useState(true);
   const [showGrossProfit, setShowGrossProfit] = useState(true);
   const [showProfit, setShowProfit] = useState(true);
-
-  // Net Profit is restricted to Master/Admin. Force it off once we know
-  // the signed-in user's role isn't allowed to see it -- this also covers
-  // the case where the role loads in after the initial render.
-  useEffect(() => {
-    if (!auth.loading && !auth.canSeeNetProfit && showProfit) {
-      setShowProfit(false);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [auth.loading, auth.canSeeNetProfit]);
+  // Other Operating Income (e.g. Sales Invoices / SIN rows) -- adds to Net
+  // Profit but is deliberately never part of the Gross Profit % calc,
+  // which the backend keeps based purely on till Sales vs Cost of Sales.
+  const [showOtherIncome, setShowOtherIncome] = useState(true);
 
   // --- Wages detail (filter by month / store / hours worked) -- wages are
   // paid monthly (one entry per store per calendar month, dated at
@@ -465,15 +462,7 @@ export default function MobileFriendlyDashboard() {
     // "branches" -- aliasing Store_Name to "name" here keeps the rest of
     // this component (which expects { id, name }) unchanged.
     const { data } = await supabase.from('Stores').select('id, name:Store_Name');
-    if (!data) return;
-    // Area Managers / Store Managers only see their assigned stores.
-    // (UI-level filter -- the real enforcement happens server-side once
-    // the RLS/RPC cutover is done.)
-    if (auth.isFullAccess) {
-      setBranches(data);
-    } else {
-      setBranches(data.filter((b: any) => auth.storeNames.includes(b.name)));
-    }
+    if (data) setBranches(data);
   }
 
   async function fetchReport() {
@@ -640,12 +629,7 @@ export default function MobileFriendlyDashboard() {
     setBudgetSaving(false);
   }
 
-  useEffect(() => {
-    if (auth.loading) return; // wait until role + store access are known
-    loadBranches();
-    loadSuppliers();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [auth.loading, auth.isFullAccess, auth.storeNames.join(',')]);
+  useEffect(() => { loadBranches(); loadSuppliers(); }, []);
 
   // On first load, apply the saved default Start Date (if one was set in
   // an earlier visit) instead of the hardcoded fallback.
@@ -741,6 +725,7 @@ export default function MobileFriendlyDashboard() {
     if (showSales) headers.push('Total Sales');
     if (showCosts) headers.push('Total Costs');
     if (showGrossProfit) headers.push('Gross Profit %');
+    if (showOtherIncome) headers.push('Other Operating Income');
     if (showProfit) headers.push('Net Profit');
 
     const csvRows = [headers.join(',')];
@@ -751,6 +736,7 @@ export default function MobileFriendlyDashboard() {
       if (showSales) values.push(row.total_sales);
       if (showCosts) values.push(row.total_costs);
       if (showGrossProfit) values.push(row.gross_profit_pct);
+      if (showOtherIncome) values.push(row.other_operating_income);
       if (showProfit) values.push(row.net_profit);
       csvRows.push(values.join(','));
     }
@@ -931,34 +917,11 @@ export default function MobileFriendlyDashboard() {
     document.body.removeChild(link);
   };
 
-  // While the session is being checked, show nothing but a simple loading
-  // state -- avoids a flash of dashboard content before a signed-out
-  // visitor gets redirected to /login (useAuth() handles that redirect).
-  if (auth.loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-gradient-to-b from-slate-100 to-gray-100">
-        <p className="text-sm text-gray-500">Loading…</p>
-      </div>
-    );
-  }
-  if (!auth.userId) {
-    return null;
-  }
-
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-100 to-gray-100 text-gray-800">
       <div className="sticky top-0 z-10 bg-gradient-to-b from-slate-100/95 to-slate-100/80 backdrop-blur-sm pt-4 sm:pt-6 pb-2">
         <div className="px-4 sm:px-6 max-w-6xl mx-auto">
           {/* HEADER SECTION */}
-          <div className="flex items-center justify-end gap-3 mb-1 text-xs text-gray-500">
-            <span>{auth.email}</span>
-            <button
-              onClick={auth.signOut}
-              className="underline hover:text-gray-700"
-            >
-              Sign out
-            </button>
-          </div>
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-4">
             <div className="flex items-center gap-3">
               <div className="flex items-center justify-center h-11 w-11 rounded-xl bg-blue-600 text-white text-xl shadow-sm shrink-0">📊</div>
@@ -1036,32 +999,30 @@ export default function MobileFriendlyDashboard() {
             )}
           </div>
 
-          {auth.canSeeRefitToggle && (
-            <div className="mt-4 pt-4 border-t border-gray-100">
-              <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500 mb-1">
-                Refit Budget
-              </label>
-              <p className="text-xs text-gray-500 mb-2">
-                Each store's weekly Refit Budget (set per store in Stores) is included in Total Costs and Net Profit
-                on Overview by default. It never appears in the Cost Tree or Suppliers tabs. Turn this off if you want
-                Overview figures to exclude it.
-              </p>
-              <label className="flex items-center gap-2 cursor-pointer w-fit">
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={includeRefitBudget}
-                  onClick={toggleIncludeRefitBudget}
-                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition ${includeRefitBudget ? 'bg-blue-600' : 'bg-gray-300'}`}
-                >
-                  <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition ${includeRefitBudget ? 'translate-x-6' : 'translate-x-1'}`} />
-                </button>
-                <span className="text-sm font-medium text-gray-700">
-                  {includeRefitBudget ? 'Included in Net Profit' : 'Excluded from Net Profit'}
-                </span>
-              </label>
-            </div>
-          )}
+          <div className="mt-4 pt-4 border-t border-gray-100">
+            <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500 mb-1">
+              Refit Budget
+            </label>
+            <p className="text-xs text-gray-500 mb-2">
+              Each store's weekly Refit Budget (set per store in Stores) is included in Total Costs and Net Profit
+              on Overview by default. It never appears in the Cost Tree or Suppliers tabs. Turn this off if you want
+              Overview figures to exclude it.
+            </p>
+            <label className="flex items-center gap-2 cursor-pointer w-fit">
+              <button
+                type="button"
+                role="switch"
+                aria-checked={includeRefitBudget}
+                onClick={toggleIncludeRefitBudget}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition ${includeRefitBudget ? 'bg-blue-600' : 'bg-gray-300'}`}
+              >
+                <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition ${includeRefitBudget ? 'translate-x-6' : 'translate-x-1'}`} />
+              </button>
+              <span className="text-sm font-medium text-gray-700">
+                {includeRefitBudget ? 'Included in Net Profit' : 'Excluded from Net Profit'}
+              </span>
+            </label>
+          </div>
         </div>
       )}
 
@@ -1191,9 +1152,8 @@ export default function MobileFriendlyDashboard() {
             <label className="flex items-center gap-2 font-medium cursor-pointer"><input type="checkbox" checked={showSales} onChange={() => setShowSales(!showSales)} className="rounded text-blue-600 focus:ring-blue-500 h-4 w-4" /> Sales</label>
             <label className="flex items-center gap-2 font-medium cursor-pointer"><input type="checkbox" checked={showCosts} onChange={() => setShowCosts(!showCosts)} className="rounded text-blue-600 focus:ring-blue-500 h-4 w-4" /> Costs</label>
             <label className="flex items-center gap-2 font-medium cursor-pointer"><input type="checkbox" checked={showGrossProfit} onChange={() => setShowGrossProfit(!showGrossProfit)} className="rounded text-blue-600 focus:ring-blue-500 h-4 w-4" /> Gross Profit %</label>
-            {auth.canSeeNetProfit && (
-              <label className="flex items-center gap-2 font-medium cursor-pointer"><input type="checkbox" checked={showProfit} onChange={() => setShowProfit(!showProfit)} className="rounded text-blue-600 focus:ring-blue-500 h-4 w-4" /> Profit</label>
-            )}
+            <label className="flex items-center gap-2 font-medium cursor-pointer"><input type="checkbox" checked={showOtherIncome} onChange={() => setShowOtherIncome(!showOtherIncome)} className="rounded text-blue-600 focus:ring-blue-500 h-4 w-4" /> Other Operating Income</label>
+            <label className="flex items-center gap-2 font-medium cursor-pointer"><input type="checkbox" checked={showProfit} onChange={() => setShowProfit(!showProfit)} className="rounded text-blue-600 focus:ring-blue-500 h-4 w-4" /> Profit</label>
             <div className="flex-1" />
             <button
               onClick={() => setViewMode(viewMode === 'weekly' ? 'total' : 'weekly')}
@@ -1234,6 +1194,7 @@ export default function MobileFriendlyDashboard() {
                       {showSales && <th className="px-6 py-3.5 text-left font-semibold text-gray-600">Total Sales</th>}
                       {showCosts && <th className="px-6 py-3.5 text-left font-semibold text-gray-600">Total Costs</th>}
                       {showGrossProfit && <th className="px-6 py-3.5 text-left font-semibold text-gray-600">Gross Profit %</th>}
+                      {showOtherIncome && <th className="px-6 py-3.5 text-left font-semibold text-gray-600">Other Operating Income</th>}
                       {showProfit && <th className="px-6 py-3.5 text-left font-semibold text-gray-600">Net Profit</th>}
                     </tr>
                   </thead>
@@ -1259,6 +1220,11 @@ export default function MobileFriendlyDashboard() {
                               {row.gross_profit_pct}%
                             </td>
                           )}
+                          {showOtherIncome && (
+                            <td className="px-6 py-4 font-medium text-teal-600">
+                              {formatGBP(row.other_operating_income)}
+                            </td>
+                          )}
                           {showProfit && (
                             <td className={`px-6 py-4 font-bold ${row.net_profit >= 0 ? 'text-green-700' : 'text-red-700'}`}>
                               {formatGBP(row.net_profit)}
@@ -1267,7 +1233,7 @@ export default function MobileFriendlyDashboard() {
                         </tr>
                         {expandedWeek === row.week_start && (
                           <tr>
-                            <td colSpan={1 + [showSales, showCosts, showGrossProfit, showProfit].filter(Boolean).length} className="bg-gray-50 px-6 py-4">
+                            <td colSpan={1 + [showSales, showCosts, showGrossProfit, showOtherIncome, showProfit].filter(Boolean).length} className="bg-gray-50 px-6 py-4">
                               {dailySalesLoading[row.week_start] ? (
                                 <div className="text-sm text-gray-400 py-2">Loading daily sales…</div>
                               ) : dailySalesError[row.week_start] ? (
@@ -1335,6 +1301,12 @@ export default function MobileFriendlyDashboard() {
                           <div className="text-blue-600 font-bold">{row.gross_profit_pct}%</div>
                         </div>
                       )}
+                      {showOtherIncome && (
+                        <div>
+                          <div className="text-xs text-gray-400 font-medium">Other Operating Income</div>
+                          <div className="text-teal-600 font-bold">{formatGBP(row.other_operating_income)}</div>
+                        </div>
+                      )}
                       {showProfit && (
                         <div className="col-span-2 pt-1 border-t border-dashed border-gray-100 mt-1">
                           <div className="text-xs text-gray-400 font-medium">Net Profit</div>
@@ -1382,6 +1354,7 @@ export default function MobileFriendlyDashboard() {
                       {showSales && <th className="px-6 py-3.5 text-left font-semibold text-gray-600">Total Sales</th>}
                       {showCosts && <th className="px-6 py-3.5 text-left font-semibold text-gray-600">Total Costs</th>}
                       {showGrossProfit && <th className="px-6 py-3.5 text-left font-semibold text-gray-600">Gross Profit %</th>}
+                      {showOtherIncome && <th className="px-6 py-3.5 text-left font-semibold text-gray-600">Other Operating Income</th>}
                       {showProfit && <th className="px-6 py-3.5 text-left font-semibold text-gray-600">Net Profit</th>}
                     </tr>
                   </thead>
@@ -1394,6 +1367,11 @@ export default function MobileFriendlyDashboard() {
                         {showGrossProfit && (
                           <td className="px-6 py-4 font-medium text-blue-600">
                             {row.gross_profit_pct}%
+                          </td>
+                        )}
+                        {showOtherIncome && (
+                          <td className="px-6 py-4 font-medium text-teal-600">
+                            {formatGBP(row.other_operating_income)}
                           </td>
                         )}
                         {showProfit && (
@@ -1432,6 +1410,12 @@ export default function MobileFriendlyDashboard() {
                         <div>
                           <div className="text-xs text-gray-400 font-medium">Gross Profit %</div>
                           <div className="text-blue-600 font-bold">{row.gross_profit_pct}%</div>
+                        </div>
+                      )}
+                      {showOtherIncome && (
+                        <div>
+                          <div className="text-xs text-gray-400 font-medium">Other Operating Income</div>
+                          <div className="text-teal-600 font-bold">{formatGBP(row.other_operating_income)}</div>
                         </div>
                       )}
                       {showProfit && (
@@ -1811,50 +1795,48 @@ export default function MobileFriendlyDashboard() {
 
       {tab === 'budget' && (
         <>
-          {/* ✍️ SET BUDGET FORM (writes to Supabase) -- Master/Admin only */}
-          {auth.canEditBudgets && (
-            <div className="mb-6 bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
-              <h2 className="text-sm font-semibold text-gray-700 mb-3">Set hours budget for this quarter</h2>
-              <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
-                <div className="sm:col-span-2">
-                  <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500 mb-1">Store</label>
-                  <select
-                    value={budgetFormStore}
-                    onChange={(e) => setBudgetFormStore(e.target.value)}
-                    className="w-full rounded-lg border-gray-300 p-2 text-sm border focus:ring-2 focus:ring-blue-500 focus:outline-none"
-                  >
-                    <option value="">Select a store...</option>
-                    {branches.map(b => <option key={b.id} value={b.name}>{b.name}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500 mb-1">Budget Hours</label>
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.5"
-                    value={budgetFormHours}
-                    onChange={(e) => setBudgetFormHours(e.target.value)}
-                    placeholder="e.g. 1200"
-                    className="w-full rounded-lg border-gray-300 p-2 text-sm border focus:ring-2 focus:ring-blue-500 focus:outline-none"
-                  />
-                </div>
-                <button
-                  onClick={saveBudget}
-                  disabled={budgetSaving || !budgetFormStore || budgetFormHours === ''}
-                  className="inline-flex items-center justify-center bg-blue-600 hover:bg-blue-700 text-white font-medium text-sm py-2.5 px-4 rounded-lg shadow-sm transition disabled:opacity-50 disabled:cursor-not-allowed"
+          {/* ✍️ SET BUDGET FORM (writes to Supabase) */}
+          <div className="mb-6 bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
+            <h2 className="text-sm font-semibold text-gray-700 mb-3">Set hours budget for this quarter</h2>
+            <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
+              <div className="sm:col-span-2">
+                <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500 mb-1">Store</label>
+                <select
+                  value={budgetFormStore}
+                  onChange={(e) => setBudgetFormStore(e.target.value)}
+                  className="w-full rounded-lg border-gray-300 p-2 text-sm border focus:ring-2 focus:ring-blue-500 focus:outline-none"
                 >
-                  {budgetSaving ? 'Saving...' : '💾 Save Budget'}
-                </button>
+                  <option value="">Select a store...</option>
+                  {branches.map(b => <option key={b.id} value={b.name}>{b.name}</option>)}
+                </select>
               </div>
-              <p className="text-xs text-gray-400 mt-2">
-                Quarters always start Jan/Apr/Jul/Oct 1st. Saving again for the same store + quarter updates the existing budget.
-              </p>
-              {budgetSaveMsg && (
-                <p className={`text-sm mt-2 ${budgetSaveMsg.startsWith('Failed') ? 'text-red-600' : 'text-green-600'}`}>{budgetSaveMsg}</p>
-              )}
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500 mb-1">Budget Hours</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.5"
+                  value={budgetFormHours}
+                  onChange={(e) => setBudgetFormHours(e.target.value)}
+                  placeholder="e.g. 1200"
+                  className="w-full rounded-lg border-gray-300 p-2 text-sm border focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                />
+              </div>
+              <button
+                onClick={saveBudget}
+                disabled={budgetSaving || !budgetFormStore || budgetFormHours === ''}
+                className="inline-flex items-center justify-center bg-blue-600 hover:bg-blue-700 text-white font-medium text-sm py-2.5 px-4 rounded-lg shadow-sm transition disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {budgetSaving ? 'Saving...' : '💾 Save Budget'}
+              </button>
             </div>
-          )}
+            <p className="text-xs text-gray-400 mt-2">
+              Quarters always start Jan/Apr/Jul/Oct 1st. Saving again for the same store + quarter updates the existing budget.
+            </p>
+            {budgetSaveMsg && (
+              <p className={`text-sm mt-2 ${budgetSaveMsg.startsWith('Failed') ? 'text-red-600' : 'text-green-600'}`}>{budgetSaveMsg}</p>
+            )}
+          </div>
 
           {budgetError && (
             <div className="mb-4 p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm">
