@@ -22,7 +22,13 @@ const FALLBACK_START_DATE = '2026-01-01';
 // default), not "unset".
 const INCLUDE_REFIT_BUDGET_KEY = 'msd_include_refit_budget';
 
-type Tab = 'overview' | 'wages' | 'budget' | 'suppliers' | 'tree' | 'projections';
+// Other Operating Income toggle: defaults to EXCLUDED from Net Profit.
+// Unlike Refit Budget (which defaults ON and is switched off), this
+// defaults OFF -- this key is only ever written when explicitly switched
+// ON in Settings, so its absence means "off" (the default).
+const INCLUDE_OTHER_INCOME_KEY = 'msd_include_other_income';
+
+type Tab = 'overview' | 'wages' | 'budget' | 'suppliers' | 'tree' | 'projections' | 'other_income';
 
 type CostTreeNode = {
   total: number;
@@ -372,10 +378,11 @@ export default function MobileFriendlyDashboard() {
   const [showCosts, setShowCosts] = useState(true);
   const [showGrossProfit, setShowGrossProfit] = useState(true);
   const [showProfit, setShowProfit] = useState(true);
-  // Other Operating Income (e.g. Sales Invoices / SIN rows) -- adds to Net
-  // Profit but is deliberately never part of the Gross Profit % calc,
-  // which the backend keeps based purely on till Sales vs Cost of Sales.
-  const [showOtherIncome, setShowOtherIncome] = useState(true);
+  // Other Operating Income: whether it's folded into Net Profit. Defaults
+  // to OFF (excluded) -- this is a Settings-level toggle, not a
+  // display/visibility one, since the number itself is now shown on its
+  // own "Other Income" tab regardless of this setting.
+  const [includeOtherIncome, setIncludeOtherIncome] = useState(false);
 
   // --- Wages detail (filter by month / store / hours worked) -- wages are
   // paid monthly (one entry per store per calendar month, dated at
@@ -423,6 +430,21 @@ export default function MobileFriendlyDashboard() {
     });
   }
 
+  // --- Other Income tree (same shape as Cost Tree, own isolated state so
+  // expand/collapse in one never leaks into the other) --------------------
+  const [otherIncomeTreeData, setOtherIncomeTreeData] = useState<any[]>([]);
+  const [otherIncomeTreeLoading, setOtherIncomeTreeLoading] = useState(false);
+  const [otherIncomeTreeError, setOtherIncomeTreeError] = useState<string | null>(null);
+  const [expandedOtherIncomeNodes, setExpandedOtherIncomeNodes] = useState<Set<string>>(new Set());
+
+  function toggleOtherIncomeNode(key: string) {
+    setExpandedOtherIncomeNodes(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  }
+
   async function loadSuppliers() {
     const { data } = await supabase.rpc('get_suppliers');
     if (data) setSuppliers(data.map((r: any) => r.supplier));
@@ -457,6 +479,19 @@ export default function MobileFriendlyDashboard() {
     setTreeLoading(false);
   }
 
+  async function fetchOtherIncomeTree() {
+    setOtherIncomeTreeLoading(true);
+    setOtherIncomeTreeError(null);
+    const { data, error } = await supabase.rpc('get_other_income_report', {
+      start_date: startDate,
+      end_date: endDate,
+      branch_id_param: branchId === 'all' ? null : parseInt(branchId)
+    });
+    if (error) setOtherIncomeTreeError(error.message);
+    else if (data) setOtherIncomeTreeData(data);
+    setOtherIncomeTreeLoading(false);
+  }
+
   async function loadBranches() {
     // The actual Supabase table is "Stores" (Store_code / Store_Name), not
     // "branches" -- aliasing Store_Name to "name" here keeps the rest of
@@ -473,7 +508,8 @@ export default function MobileFriendlyDashboard() {
       end_date: endDate,
       branch_id_param: branchId === 'all' ? null : parseInt(branchId),
       include_projected_param: includeProjected,
-      include_refit_budget_param: includeRefitBudget
+      include_refit_budget_param: includeRefitBudget,
+      include_other_income_param: includeOtherIncome
     });
     if (error) setErrorMsg(error.message);
     else if (data) setReportData(data);
@@ -491,7 +527,8 @@ export default function MobileFriendlyDashboard() {
       end_date: endDate,
       branch_id_param: branchId === 'all' ? null : parseInt(branchId),
       include_projected_param: includeProjected,
-      include_refit_budget_param: includeRefitBudget
+      include_refit_budget_param: includeRefitBudget,
+      include_other_income_param: includeOtherIncome
     });
     if (error) setErrorMsg(error.message);
     else if (data) setWeeklyData(data);
@@ -655,11 +692,25 @@ export default function MobileFriendlyDashboard() {
     localStorage.setItem(INCLUDE_REFIT_BUDGET_KEY, String(next));
   }
 
+  // Other Operating Income defaults to OFF. Only an explicit "true"
+  // previously saved turns it on -- any other stored value (or none at
+  // all) leaves it off.
+  useEffect(() => {
+    const saved = typeof window !== 'undefined' ? localStorage.getItem(INCLUDE_OTHER_INCOME_KEY) : null;
+    if (saved === 'true') setIncludeOtherIncome(true);
+  }, []);
+
+  function toggleIncludeOtherIncome() {
+    const next = !includeOtherIncome;
+    setIncludeOtherIncome(next);
+    localStorage.setItem(INCLUDE_OTHER_INCOME_KEY, String(next));
+  }
+
   useEffect(() => {
     if (tab !== 'overview') return;
     if (viewMode === 'weekly') fetchWeeklyReport();
     else fetchReport();
-  }, [tab, startDate, endDate, branchId, viewMode, includeProjected, includeRefitBudget]);
+  }, [tab, startDate, endDate, branchId, viewMode, includeProjected, includeRefitBudget, includeOtherIncome]);
 
   useEffect(() => {
     if (tab === 'wages') fetchWagesDetail();
@@ -682,6 +733,10 @@ export default function MobileFriendlyDashboard() {
   useEffect(() => {
     if (tab === 'tree') fetchCostTree();
   }, [tab, startDate, endDate, branchId, includeProjected]);
+
+  useEffect(() => {
+    if (tab === 'other_income') fetchOtherIncomeTree();
+  }, [tab, startDate, endDate, branchId]);
 
   function saveDefaultStartDate() {
     localStorage.setItem(DEFAULT_START_DATE_KEY, defaultStartDateDraft);
@@ -725,7 +780,6 @@ export default function MobileFriendlyDashboard() {
     if (showSales) headers.push('Total Sales');
     if (showCosts) headers.push('Total Costs');
     if (showGrossProfit) headers.push('Gross Profit %');
-    if (showOtherIncome) headers.push('Other Operating Income');
     if (showProfit) headers.push('Net Profit');
 
     const csvRows = [headers.join(',')];
@@ -736,7 +790,6 @@ export default function MobileFriendlyDashboard() {
       if (showSales) values.push(row.total_sales);
       if (showCosts) values.push(row.total_costs);
       if (showGrossProfit) values.push(row.gross_profit_pct);
-      if (showOtherIncome) values.push(row.other_operating_income);
       if (showProfit) values.push(row.net_profit);
       csvRows.push(values.join(','));
     }
@@ -891,6 +944,27 @@ export default function MobileFriendlyDashboard() {
     setExpandedNodes(new Set());
   }
 
+  const otherIncomeTree = useMemo(() => buildCostTree(otherIncomeTreeData), [otherIncomeTreeData]);
+  const otherIncomeGrandTotal = useMemo(
+    () => Object.values(otherIncomeTree).reduce((s, n) => s + n.total, 0),
+    [otherIncomeTree]
+  );
+
+  function expandAllOtherIncomeTree() {
+    const keys = new Set<string>();
+    for (const [acctName, acct] of sortedEntries(otherIncomeTree)) {
+      const acctPath = acctName;
+      keys.add(acctPath);
+      for (const [deptName] of sortedEntries(acct.children!)) {
+        keys.add(acctPath + '::' + deptName);
+      }
+    }
+    setExpandedOtherIncomeNodes(keys);
+  }
+  function collapseAllOtherIncomeTree() {
+    setExpandedOtherIncomeNodes(new Set());
+  }
+
   const downloadSupplierCSV = () => {
     if (supplierData.length === 0) return;
     const headers = ['Invoice Date', 'Supplier', 'Store', 'Invoice/Details', 'Account', 'Dept', 'Total', 'VAT'];
@@ -941,6 +1015,7 @@ export default function MobileFriendlyDashboard() {
               ['budget', '🎯 Hours Budget'],
               ['suppliers', '🚚 Suppliers'],
               ['tree', '🌳 Cost Tree'],
+              ['other_income', '💰 Other Income'],
             ] as [Tab, string][]).map(([key, label]) => (
               <button
                 key={key}
@@ -1020,6 +1095,35 @@ export default function MobileFriendlyDashboard() {
               </button>
               <span className="text-sm font-medium text-gray-700">
                 {includeRefitBudget ? 'Included in Net Profit' : 'Excluded from Net Profit'}
+              </span>
+            </label>
+          </div>
+
+          <div className="mt-4 pt-4 border-t border-gray-100">
+            <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500 mb-1">
+              Other Operating Income
+            </label>
+            <p className="text-xs text-gray-500 mb-2">
+              Revenue that isn't till sales (Sales Invoices / "SIN" rows, e.g. wholesale) is excluded from Net Profit
+              on Overview by default. Turn this on to include it. It never affects Gross Profit %, and it has its own
+              "Other Income" tab for the full breakdown regardless of this setting.{' '}
+              <span className="italic">
+                Restricting this switch to Master/Admin accounts is planned once sign-in is added -- for now it's
+                available to anyone with Settings access.
+              </span>
+            </p>
+            <label className="flex items-center gap-2 cursor-pointer w-fit">
+              <button
+                type="button"
+                role="switch"
+                aria-checked={includeOtherIncome}
+                onClick={toggleIncludeOtherIncome}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition ${includeOtherIncome ? 'bg-blue-600' : 'bg-gray-300'}`}
+              >
+                <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition ${includeOtherIncome ? 'translate-x-6' : 'translate-x-1'}`} />
+              </button>
+              <span className="text-sm font-medium text-gray-700">
+                {includeOtherIncome ? 'Included in Net Profit' : 'Excluded from Net Profit'}
               </span>
             </label>
           </div>
@@ -1146,13 +1250,17 @@ export default function MobileFriendlyDashboard() {
               🛠️ Refit Budget excluded (switched off in Settings)
             </div>
           )}
+          {includeOtherIncome && (
+            <div className="mb-4 p-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 text-sm font-semibold">
+              💰 Other Operating Income included (switched on in Settings)
+            </div>
+          )}
           {/* 🔍 FLEXIBLE COLUMN CHANGER BAR + view/download actions */}
           <div className="flex flex-wrap gap-4 sm:gap-6 mb-6 bg-white p-4 rounded-xl border border-gray-200 shadow-sm items-center text-sm">
             <span className="font-semibold text-gray-500 text-xs uppercase tracking-wider">Metrics Shown:</span>
             <label className="flex items-center gap-2 font-medium cursor-pointer"><input type="checkbox" checked={showSales} onChange={() => setShowSales(!showSales)} className="rounded text-blue-600 focus:ring-blue-500 h-4 w-4" /> Sales</label>
             <label className="flex items-center gap-2 font-medium cursor-pointer"><input type="checkbox" checked={showCosts} onChange={() => setShowCosts(!showCosts)} className="rounded text-blue-600 focus:ring-blue-500 h-4 w-4" /> Costs</label>
             <label className="flex items-center gap-2 font-medium cursor-pointer"><input type="checkbox" checked={showGrossProfit} onChange={() => setShowGrossProfit(!showGrossProfit)} className="rounded text-blue-600 focus:ring-blue-500 h-4 w-4" /> Gross Profit %</label>
-            <label className="flex items-center gap-2 font-medium cursor-pointer"><input type="checkbox" checked={showOtherIncome} onChange={() => setShowOtherIncome(!showOtherIncome)} className="rounded text-blue-600 focus:ring-blue-500 h-4 w-4" /> Other Operating Income</label>
             <label className="flex items-center gap-2 font-medium cursor-pointer"><input type="checkbox" checked={showProfit} onChange={() => setShowProfit(!showProfit)} className="rounded text-blue-600 focus:ring-blue-500 h-4 w-4" /> Profit</label>
             <div className="flex-1" />
             <button
@@ -1194,7 +1302,6 @@ export default function MobileFriendlyDashboard() {
                       {showSales && <th className="px-6 py-3.5 text-left font-semibold text-gray-600">Total Sales</th>}
                       {showCosts && <th className="px-6 py-3.5 text-left font-semibold text-gray-600">Total Costs</th>}
                       {showGrossProfit && <th className="px-6 py-3.5 text-left font-semibold text-gray-600">Gross Profit %</th>}
-                      {showOtherIncome && <th className="px-6 py-3.5 text-left font-semibold text-gray-600">Other Operating Income</th>}
                       {showProfit && <th className="px-6 py-3.5 text-left font-semibold text-gray-600">Net Profit</th>}
                     </tr>
                   </thead>
@@ -1220,11 +1327,6 @@ export default function MobileFriendlyDashboard() {
                               {row.gross_profit_pct}%
                             </td>
                           )}
-                          {showOtherIncome && (
-                            <td className="px-6 py-4 font-medium text-teal-600">
-                              {formatGBP(row.other_operating_income)}
-                            </td>
-                          )}
                           {showProfit && (
                             <td className={`px-6 py-4 font-bold ${row.net_profit >= 0 ? 'text-green-700' : 'text-red-700'}`}>
                               {formatGBP(row.net_profit)}
@@ -1233,7 +1335,7 @@ export default function MobileFriendlyDashboard() {
                         </tr>
                         {expandedWeek === row.week_start && (
                           <tr>
-                            <td colSpan={1 + [showSales, showCosts, showGrossProfit, showOtherIncome, showProfit].filter(Boolean).length} className="bg-gray-50 px-6 py-4">
+                            <td colSpan={1 + [showSales, showCosts, showGrossProfit, showProfit].filter(Boolean).length} className="bg-gray-50 px-6 py-4">
                               {dailySalesLoading[row.week_start] ? (
                                 <div className="text-sm text-gray-400 py-2">Loading daily sales…</div>
                               ) : dailySalesError[row.week_start] ? (
@@ -1301,12 +1403,6 @@ export default function MobileFriendlyDashboard() {
                           <div className="text-blue-600 font-bold">{row.gross_profit_pct}%</div>
                         </div>
                       )}
-                      {showOtherIncome && (
-                        <div>
-                          <div className="text-xs text-gray-400 font-medium">Other Operating Income</div>
-                          <div className="text-teal-600 font-bold">{formatGBP(row.other_operating_income)}</div>
-                        </div>
-                      )}
                       {showProfit && (
                         <div className="col-span-2 pt-1 border-t border-dashed border-gray-100 mt-1">
                           <div className="text-xs text-gray-400 font-medium">Net Profit</div>
@@ -1354,7 +1450,6 @@ export default function MobileFriendlyDashboard() {
                       {showSales && <th className="px-6 py-3.5 text-left font-semibold text-gray-600">Total Sales</th>}
                       {showCosts && <th className="px-6 py-3.5 text-left font-semibold text-gray-600">Total Costs</th>}
                       {showGrossProfit && <th className="px-6 py-3.5 text-left font-semibold text-gray-600">Gross Profit %</th>}
-                      {showOtherIncome && <th className="px-6 py-3.5 text-left font-semibold text-gray-600">Other Operating Income</th>}
                       {showProfit && <th className="px-6 py-3.5 text-left font-semibold text-gray-600">Net Profit</th>}
                     </tr>
                   </thead>
@@ -1367,11 +1462,6 @@ export default function MobileFriendlyDashboard() {
                         {showGrossProfit && (
                           <td className="px-6 py-4 font-medium text-blue-600">
                             {row.gross_profit_pct}%
-                          </td>
-                        )}
-                        {showOtherIncome && (
-                          <td className="px-6 py-4 font-medium text-teal-600">
-                            {formatGBP(row.other_operating_income)}
                           </td>
                         )}
                         {showProfit && (
@@ -1410,12 +1500,6 @@ export default function MobileFriendlyDashboard() {
                         <div>
                           <div className="text-xs text-gray-400 font-medium">Gross Profit %</div>
                           <div className="text-blue-600 font-bold">{row.gross_profit_pct}%</div>
-                        </div>
-                      )}
-                      {showOtherIncome && (
-                        <div>
-                          <div className="text-xs text-gray-400 font-medium">Other Operating Income</div>
-                          <div className="text-teal-600 font-bold">{formatGBP(row.other_operating_income)}</div>
                         </div>
                       )}
                       {showProfit && (
@@ -2080,6 +2164,61 @@ export default function MobileFriendlyDashboard() {
                   onToggle={toggleNode}
                   formatGBP={formatGBP}
                   parentTotal={costTreeGrandTotal}
+                />
+              ))}
+            </div>
+          )}
+          <p className="text-xs text-gray-400 mt-3">
+            Click any row with a ▶ to drill down: Account → Department → Store → Supplier → individual invoice lines.
+          </p>
+        </>
+      )}
+
+      {tab === 'other_income' && (
+        <>
+          <div className="mb-4 p-3 rounded-lg bg-blue-50 border border-blue-200 text-blue-800 text-sm">
+            💰 Revenue that isn't till sales (e.g. wholesale invoices). Shown here regardless of the Settings toggle
+            below -- that toggle only controls whether it's folded into Net Profit on Overview.
+          </div>
+          <div className="flex flex-wrap justify-between items-center gap-2 mb-4">
+            <div className="text-sm text-gray-500">
+              Total for range: <span className="font-bold text-gray-900">{formatGBP(otherIncomeGrandTotal)}</span>
+            </div>
+            <div className="flex gap-2">
+              <button onClick={expandAllOtherIncomeTree} className="text-xs font-medium text-blue-600 hover:text-blue-800 bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-lg transition">Expand Accounts</button>
+              <button onClick={collapseAllOtherIncomeTree} className="text-xs font-medium text-gray-500 hover:text-gray-700 bg-gray-100 hover:bg-gray-200 px-3 py-1.5 rounded-lg transition">Collapse All</button>
+            </div>
+          </div>
+
+          {otherIncomeTreeError && (
+            <div className="mb-4 p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm">
+              Couldn&apos;t load the other income breakdown: {otherIncomeTreeError}
+            </div>
+          )}
+
+          {otherIncomeTreeLoading ? (
+            <LoadingBlock label="Building other income breakdown..." />
+          ) : Object.keys(otherIncomeTree).length === 0 ? (
+            <div className="p-8 text-center text-gray-400 bg-white rounded-xl border border-gray-200">No other operating income in this date range.</div>
+          ) : (
+            <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+              <div className="hidden sm:flex items-center gap-2 py-2.5 pr-3 pl-3 bg-gray-50 border-b border-gray-200 text-xs font-semibold uppercase tracking-wider text-gray-500">
+                <span className="w-4" />
+                <span className="flex-1">Account / Department / Store / Supplier</span>
+                <span className="hidden sm:block w-24 text-center">Share</span>
+                <span>Amount</span>
+              </div>
+              {sortedEntries(otherIncomeTree).map(([name, node]) => (
+                <CostTreeRow
+                  key={name}
+                  name={name}
+                  node={node}
+                  path={name}
+                  level={0}
+                  expanded={expandedOtherIncomeNodes}
+                  onToggle={toggleOtherIncomeNode}
+                  formatGBP={formatGBP}
+                  parentTotal={otherIncomeGrandTotal}
                 />
               ))}
             </div>
