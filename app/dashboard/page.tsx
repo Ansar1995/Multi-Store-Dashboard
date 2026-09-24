@@ -22,7 +22,7 @@ const INCLUDE_REFIT_BUDGET_KEY = 'msd_include_refit_budget';
 // ON in Settings, so its absence means "off" (the default).
 const INCLUDE_OTHER_INCOME_KEY = 'msd_include_other_income';
 
-type Tab = 'overview' | 'wages' | 'budget' | 'suppliers' | 'tree' | 'projections' | 'other_income';
+type Tab = 'overview' | 'wages' | 'budget' | 'suppliers' | 'tree' | 'projections' | 'other_income' | 'vat_return';
 
 type CostTreeNode = {
   total: number;
@@ -227,6 +227,14 @@ function todayStr() {
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 }
 
+// Yesterday's date (local calendar day), used as the default end date so the
+// dashboard opens showing complete days only, never a partial "today".
+function yesterdayStr() {
+  const d = new Date();
+  d.setDate(d.getDate() - 1);
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
 // Fiscal years run Feb 1st -- Jan 31st (same anchor as the quarters above).
 function fiscalYearStartForYear(y: number) {
   return `${y}-02-01`;
@@ -312,14 +320,52 @@ function buildQuarterPeriodOptions(): YearOption[] {
   return opts;
 }
 
+// Add N days to a YYYY-MM-DD string, done in UTC for the same
+// timezone-safety reason as quarterEndFromStart() above.
+function addDaysToDateStr(dateStr: string, days: number): string {
+  const d = new Date(dateStr + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+// Picks the most recent quarter that passes isVatReturnQuarterComplete(),
+// for the VAT Return tab's initial selection (declared up here since it
+// needs to run before the component's quarterPeriodOptions state exists).
+function getMostRecentCompleteVatQuarterStart(): string {
+  const quarters = buildQuarterPeriodOptions();
+  const complete = quarters.filter(q => isVatReturnQuarterComplete(q.start, q.end));
+  complete.sort((a, b) => (a.start < b.start ? 1 : -1));
+  return complete[0]?.start ?? quarters[0].start;
+}
+
+// The VAT Return tab only ever shows COMPLETE quarters, and real invoice
+// values -- never projected/budget costs. "Complete" means:
+//   - Q3 2026 (starting 2026-08-01) onward: the quarter's end date plus a
+//     21-day settling window has passed, giving suppliers time to invoice
+//     before the return is finalised.
+//   - Before Q3 2026: these are historical quarters being backfilled from
+//     the old manual system, already closed in real life, so they're
+//     available as soon as their end date has passed (no 21-day wait).
+const VAT_RETURN_21_DAY_RULE_START = '2026-08-01';
+function isVatReturnQuarterComplete(quarterStart: string, quarterEnd: string): boolean {
+  const today = todayStr();
+  if (quarterStart >= VAT_RETURN_21_DAY_RULE_START) {
+    return today >= addDaysToDateStr(quarterEnd, 21);
+  }
+  return quarterEnd <= today;
+}
+
 export default function MobileFriendlyDashboard() {
   // Redirects to /login automatically if there's no active session.
   const auth = useAuth();
 
   const [tab, setTab] = useState<Tab>('overview');
 
-  const [startDate, setStartDate] = useState(FALLBACK_START_DATE);
-  const [endDate, setEndDate] = useState('2026-12-31');
+  // Dashboard opens on the current fiscal quarter to yesterday by default
+  // (unless a custom Default Start Date has been saved in Settings, which
+  // only overrides the start -- see the effect below that applies it).
+  const [startDate, setStartDate] = useState(getCurrentQuarterStart());
+  const [endDate, setEndDate] = useState(yesterdayStr());
   const [branchId, setBranchId] = useState<string>('all');
   const [branches, setBranches] = useState<any[]>([]);
   const [reportData, setReportData] = useState<any[]>([]);
@@ -463,6 +509,18 @@ export default function MobileFriendlyDashboard() {
     });
   }
 
+  // --- VAT Return (Outputs: Shop Sales incl PayPoint + Other Income;
+  // Inputs: Purchases (Box 7, all costs) + Input VAT; real invoice values
+  // only, complete quarters only -- see isVatReturnQuarterComplete) --------
+  const [vatQuarter, setVatQuarter] = useState<string>(() => getMostRecentCompleteVatQuarterStart());
+  const [vatReturnData, setVatReturnData] = useState<any | null>(null);
+  const [vatReturnLoading, setVatReturnLoading] = useState(false);
+  const [vatReturnError, setVatReturnError] = useState<string | null>(null);
+  const [vatShopSalesByStore, setVatShopSalesByStore] = useState<any[]>([]);
+  const [vatShopSalesExpanded, setVatShopSalesExpanded] = useState(false);
+  const [vatOtherIncomeDetail, setVatOtherIncomeDetail] = useState<any[]>([]);
+  const [vatOtherIncomeExpanded, setVatOtherIncomeExpanded] = useState(false);
+
   async function loadSuppliers() {
     const { data } = await supabase.rpc('get_suppliers');
     if (data) setSuppliers(data.map((r: any) => r.supplier));
@@ -508,6 +566,24 @@ export default function MobileFriendlyDashboard() {
     if (error) setOtherIncomeTreeError(error.message);
     else if (data) setOtherIncomeTreeData(data);
     setOtherIncomeTreeLoading(false);
+  }
+
+  async function fetchVatReturn() {
+    setVatReturnLoading(true);
+    setVatReturnError(null);
+    const vatStart = vatQuarter;
+    const vatEnd = quarterEndFromStart(vatQuarter);
+    const branch_id_param = branchId === 'all' ? null : parseInt(branchId);
+    const [returnRes, storeRes, otherIncomeRes] = await Promise.all([
+      supabase.rpc('get_vat_return_report', { start_date: vatStart, end_date: vatEnd, branch_id_param }),
+      supabase.rpc('get_vat_shop_sales_by_store', { start_date: vatStart, end_date: vatEnd, branch_id_param }),
+      supabase.rpc('get_other_income_report', { start_date: vatStart, end_date: vatEnd, branch_id_param }),
+    ]);
+    if (returnRes.error) setVatReturnError(returnRes.error.message);
+    else if (returnRes.data) setVatReturnData(returnRes.data[0] ?? null);
+    if (storeRes.data) setVatShopSalesByStore(storeRes.data);
+    if (otherIncomeRes.data) setVatOtherIncomeDetail(otherIncomeRes.data);
+    setVatReturnLoading(false);
   }
 
   async function loadBranches() {
@@ -768,6 +844,10 @@ export default function MobileFriendlyDashboard() {
   useEffect(() => {
     if (tab === 'other_income') fetchOtherIncomeTree();
   }, [tab, startDate, endDate, branchId]);
+
+  useEffect(() => {
+    if (tab === 'vat_return') fetchVatReturn();
+  }, [tab, vatQuarter, branchId]);
 
   function saveDefaultStartDate() {
     localStorage.setItem(DEFAULT_START_DATE_KEY, defaultStartDateDraft);
@@ -1070,6 +1150,7 @@ export default function MobileFriendlyDashboard() {
               ['suppliers', '🚚 Suppliers'],
               ['tree', '🌳 Cost Tree'],
               ['other_income', '💰 Other Income'],
+              ['vat_return', '🧮 VAT Return'],
             ] as [Tab, string][]).map(([key, label]) => (
               <button
                 key={key}
@@ -1103,7 +1184,7 @@ export default function MobileFriendlyDashboard() {
           </label>
           <p className="text-xs text-gray-500 mb-2">
             The dashboard will open with this as the Start Date from now on (saved in this browser only).
-            {savedDefaultStartDate ? ` Currently saved: ${savedDefaultStartDate}.` : ' No default saved yet -- using ' + FALLBACK_START_DATE + '.'}
+            {savedDefaultStartDate ? ` Currently saved: ${savedDefaultStartDate}.` : ' No default saved yet -- using the current fiscal quarter\'s start.'}
           </p>
           <div className="flex flex-wrap items-center gap-2">
             <input
@@ -2286,6 +2367,143 @@ export default function MobileFriendlyDashboard() {
           </p>
         </>
       )}
+
+      {tab === 'vat_return' && (() => {
+        const vatQuarterOptions = quarterPeriodOptions.filter(q => isVatReturnQuarterComplete(q.start, q.end));
+        const selectedQuarterOpt = vatQuarterOptions.find(q => q.value === `q-${vatQuarter}`);
+        return (
+          <>
+            <div className="mb-4 p-3 rounded-lg bg-blue-50 border border-blue-200 text-blue-800 text-sm">
+              🧮 Real invoice values only -- no projected or budget costs are ever included here. Only complete
+              quarters are shown (Q3 2026 onward: 21 days after quarter end, to give suppliers time to invoice;
+              earlier quarters are available as soon as they have passed, since they are being backfilled from
+              the old manual system).
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 mb-4">
+              <label className="text-xs font-semibold uppercase tracking-wider text-gray-500">Quarter</label>
+              {vatQuarterOptions.length === 0 ? (
+                <span className="text-sm text-gray-400">No complete quarters available yet.</span>
+              ) : (
+                <select
+                  value={`q-${vatQuarter}`}
+                  onChange={(e) => setVatQuarter(e.target.value.replace(/^q-/, ''))}
+                  className="rounded-lg border-gray-300 p-2 text-sm border focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                >
+                  {vatQuarterOptions.map(q => (
+                    <option key={q.value} value={q.value}>{q.label}</option>
+                  ))}
+                </select>
+              )}
+              {selectedQuarterOpt && (
+                <span className="text-xs text-gray-400">{selectedQuarterOpt.start} to {selectedQuarterOpt.end}</span>
+              )}
+            </div>
+
+            {vatReturnError && (
+              <div className="mb-4 p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-sm">
+                Couldn&apos;t load the VAT return: {vatReturnError}
+              </div>
+            )}
+
+            {vatReturnLoading ? (
+              <LoadingBlock label="Building VAT return..." />
+            ) : !vatReturnData ? (
+              <div className="p-8 text-center text-gray-400 bg-white rounded-xl border border-gray-200">No data for this quarter.</div>
+            ) : (
+              <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+
+                <div className="px-4 py-2.5 bg-gray-50 border-b border-gray-200 text-xs font-semibold uppercase tracking-wider text-gray-500">
+                  Outputs
+                </div>
+
+                {/* Shop Sales (incl PayPoint) -- drill down to store level */}
+                <div className="border-b border-gray-100">
+                  <button
+                    onClick={() => setVatShopSalesExpanded(v => !v)}
+                    className="w-full flex items-center gap-2 px-4 py-3 hover:bg-gray-50 transition text-left"
+                  >
+                    <span className="w-4 text-gray-400">{vatShopSalesExpanded ? '▼' : '▶'}</span>
+                    <span className="flex-1 font-medium text-gray-800">Shop Sales (incl. PayPoint)</span>
+                    <span className="text-xs text-gray-400 w-28 text-right">VAT {formatGBP(vatReturnData.shop_sales_vat)}</span>
+                    <span className="font-semibold text-gray-900 w-28 text-right">{formatGBP(vatReturnData.shop_sales_net)}</span>
+                  </button>
+                  {vatShopSalesExpanded && (
+                    <div className="bg-gray-50 border-t border-gray-100">
+                      {vatShopSalesByStore.map((row: any) => (
+                        <div key={row.store_name} className="flex items-center gap-2 pl-10 pr-4 py-2 text-sm border-b border-gray-100 last:border-b-0">
+                          <span className="flex-1 text-gray-600">{row.store_name}</span>
+                          <span className="text-xs text-gray-400 w-28 text-right">VAT {formatGBP(row.vat)}</span>
+                          <span className="text-gray-800 w-28 text-right">{formatGBP(row.net_sales)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Other Income -- drill down to individual invoices */}
+                <div className="border-b border-gray-200">
+                  <button
+                    onClick={() => setVatOtherIncomeExpanded(v => !v)}
+                    className="w-full flex items-center gap-2 px-4 py-3 hover:bg-gray-50 transition text-left"
+                  >
+                    <span className="w-4 text-gray-400">{vatOtherIncomeExpanded ? '▼' : '▶'}</span>
+                    <span className="flex-1 font-medium text-gray-800">Other Income</span>
+                    <span className="text-xs text-gray-400 w-28 text-right">VAT {formatGBP(vatReturnData.other_income_vat)}</span>
+                    <span className="font-semibold text-gray-900 w-28 text-right">{formatGBP(vatReturnData.other_income_net)}</span>
+                  </button>
+                  {vatOtherIncomeExpanded && (
+                    <div className="bg-gray-50 border-t border-gray-100">
+                      {vatOtherIncomeDetail.length === 0 ? (
+                        <div className="pl-10 pr-4 py-2 text-sm text-gray-400">No other income invoices this quarter.</div>
+                      ) : vatOtherIncomeDetail.map((row: any, i: number) => (
+                        <div key={i} className="flex items-center gap-2 pl-10 pr-4 py-2 text-sm border-b border-gray-100 last:border-b-0">
+                          <span className="text-gray-400 w-24 shrink-0">{row.invoice_date}</span>
+                          <span className="flex-1 text-gray-600 truncate">{row.supplier} -- {row.details} ({row.store_name})</span>
+                          <span className="text-xs text-gray-400 w-24 text-right">VAT {formatGBP(row.vat)}</span>
+                          <span className="text-gray-800 w-28 text-right">{formatGBP(row.total - row.vat)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-2 px-4 py-2.5 bg-blue-50/50 text-sm">
+                  <span className="flex-1 font-semibold text-gray-700">Output VAT</span>
+                  <span className="font-bold text-gray-900 w-28 text-right">{formatGBP(vatReturnData.output_vat)}</span>
+                </div>
+
+                <div className="px-4 py-2.5 bg-gray-50 border-b border-t border-gray-200 text-xs font-semibold uppercase tracking-wider text-gray-500">
+                  Inputs
+                </div>
+
+                {/* Purchases (Box 7: all costs, net of VAT) -- no drill-down */}
+                <div className="flex items-center gap-2 px-4 py-3 border-b border-gray-100">
+                  <span className="w-4" />
+                  <span className="flex-1 font-medium text-gray-800">Purchases</span>
+                  <span className="font-semibold text-gray-900 w-28 text-right">{formatGBP(vatReturnData.purchases_net)}</span>
+                </div>
+
+                {/* Input VAT -- no drill-down */}
+                <div className="flex items-center gap-2 px-4 py-2.5 bg-blue-50/50 text-sm">
+                  <span className="flex-1 font-semibold text-gray-700">Input VAT</span>
+                  <span className="font-bold text-gray-900 w-28 text-right">{formatGBP(vatReturnData.input_vat)}</span>
+                </div>
+
+                {/* VAT due / refund */}
+                <div className={`flex items-center gap-2 px-4 py-4 border-t-2 ${vatReturnData.vat_due >= 0 ? 'bg-red-50 border-red-200' : 'bg-green-50 border-green-200'}`}>
+                  <span className={`flex-1 font-bold ${vatReturnData.vat_due >= 0 ? 'text-red-700' : 'text-green-700'}`}>
+                    {vatReturnData.vat_due >= 0 ? 'VAT Due to HMRC' : 'VAT Refund Due'}
+                  </span>
+                  <span className={`font-bold text-lg ${vatReturnData.vat_due >= 0 ? 'text-red-700' : 'text-green-700'}`}>
+                    {formatGBP(Math.abs(vatReturnData.vat_due))}
+                  </span>
+                </div>
+              </div>
+            )}
+          </>
+        );
+      })()}
       </div>
     </div>
   );
